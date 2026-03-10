@@ -10,7 +10,9 @@ import bcrypt
 
 # We require users to install pandas: pip install pandas asyncpg bcrypt
 
-DATABASE_URL = "postgresql://user:pass@localhost:5432/db"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+if DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 # The path where you downloaded the Kaggle CSV
 CSV_FILE_PATH = "youtube_recommendation_data.csv"

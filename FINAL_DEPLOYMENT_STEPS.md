@@ -89,7 +89,22 @@ chmod +x deploy.sh
 
 ---
 
-## 6. Maintenance Commands
+## 6. Seed Large Dataset (Optional)
+If you want to train on the 1 million YouTube interactions:
+1. **Apply Configuration Changes** (if not already done):
+   ```bash
+   git pull
+   docker compose up -d --build
+   ```
+2. **Run the Seed Script**:
+   ```bash
+   docker compose exec worker python /app/seed_kaggle.py
+   ```
+   *This will take about 5–10 minutes to process all 1M rows.*
+
+---
+
+## 7. Maintenance Commands
 - **Stop everything**: `docker compose down`
 - **Restart one service**: `docker compose restart worker`
 - **Update with latest code**:
