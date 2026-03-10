@@ -6,9 +6,15 @@ import asyncpg
 import numpy as np
 from collections import defaultdict
 
+import os
 # ── Config ────────────────────────────────────────────────────────────────────
-BASE_URL     = "http://62.84.176.140:8080/api/v1"
-DATABASE_URL = "postgresql://user:pass@localhost:5432/db"
+# If running inside Docker, use service names. If running from host, use VPS IP.
+BASE_URL     = os.getenv("API_URL", "http://62.84.176.140:8080/api/v1")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+
+# Strip SQLAlchemy prefixes if they exist (asyncpg doesn't support them)
+if DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 # 2 users only
 USER_PROFILES = [

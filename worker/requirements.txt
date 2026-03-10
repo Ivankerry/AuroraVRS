@@ -3,3 +3,5 @@ redis[asyncio]==5.0.8
 sentence-transformers
 pandas
 bcrypt
+requests
+numpy
