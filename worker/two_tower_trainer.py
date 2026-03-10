@@ -72,9 +72,13 @@ def prepare_dataset(records, vocab, video_tag_map):
     positives = []
     video_features = {}
     now = datetime.utcnow()
-    all_videos = list(set(r['video_id'] for r in records))
+    all_vids_list = list(set(r['video_id'] for r in records))
+    all_vids_array = np.array(all_vids_list)
     
-    for r in records:
+    for i, r in enumerate(records):
+        if i % 10000 == 0 and i > 0:
+            logger.info(f"Dataset preparation: {i}/{len(records)} records processed...")
+            
         vid = r['video_id']
         if vid not in video_features:
             # strip timezone info if postgres returns aware datetimes
@@ -111,9 +115,9 @@ def prepare_dataset(records, vocab, video_tag_map):
         
         negatives = []
         for _ in range(4):
-            neg_vid = np.random.choice(all_videos)
+            neg_vid = np.random.choice(all_vids_array)
             while neg_vid == vid:
-                neg_vid = np.random.choice(all_videos)
+                neg_vid = np.random.choice(all_vids_array)
             negatives.append(neg_vid)
             
         positives.append({
