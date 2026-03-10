@@ -69,6 +69,7 @@ async def load_video_tags(conn, video_ids):
     return video_tag_map
 
 def prepare_dataset(records, vocab, video_tag_map):
+    logger.info(f"Preparing dataset with {len(records)} records...")
     positives = []
     video_features = {}
     now = datetime.utcnow()
