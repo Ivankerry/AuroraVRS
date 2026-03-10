@@ -45,8 +45,6 @@ async def load_training_data(conn):
     JOIN users u ON u.id = e.user_id
     JOIN videos v ON v.id = e.video_id
     WHERE e.event_type IN ('VIEW', 'LIKE', 'SHARE', 'DISLIKE', 'SKIP')
-      -- AND e.created_at > NOW() - INTERVAL '30 days'
-      AND uiv.event_count >= 5
     ORDER BY e.created_at DESC
     LIMIT 100000
     """
