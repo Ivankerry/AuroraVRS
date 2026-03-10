@@ -21,7 +21,7 @@ services:
     build:
       context: ./api
     ports:
-      - "127.0.0.1:8080:8000"
+      - "8080:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/db
       REDIS_URL: redis://redis:6379/0
