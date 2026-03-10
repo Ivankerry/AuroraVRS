@@ -77,8 +77,8 @@ def prepare_dataset(records, vocab, video_tag_map):
     all_vids_array = np.array(all_vids_list)
     
     for i, r in enumerate(records):
-        if i % 10000 == 0 and i > 0:
-            logger.info(f"Dataset preparation: {i}/{len(records)} records processed...")
+        if i % 10000 == 0:
+            logger.info(f"Dataset preparation progress: {i}/{len(records)} records...")
             
         vid = r['video_id']
         if vid not in video_features:
@@ -313,7 +313,10 @@ async def run_training_cycle(pool):
                 logger.info(f"Fetched {len(records)} events from DB.")
 
                 vid_ids = list(set(r['video_id'] for r in records))
+                logger.info(f"Loading metadata for {len(vid_ids)} unique videos...")
                 video_tag_map = await load_video_tags(conn, vid_ids)
+                
+                logger.info("Building training dataset and negative sampling...")
                 pairs, video_features = prepare_dataset(records, vocab, video_tag_map)
 
                 pos_pairs = [p for p in pairs if p['is_positive']]
