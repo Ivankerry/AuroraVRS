@@ -1,6 +1,14 @@
 # AURORA-VRS API Documentation
 
-This document officially outlines every available API endpoint natively built into the AURORA-VRS backend system serving on `localhost:8080`.
+This document officially outlines every available API endpoint natively built into the AURORA-VRS backend system serving on port **8080** (Docker mapped from 8000).
+
+---
+
+## 🛠️ System (`api/main.py`)
+
+### **GET** `/health`
+Returns the operational status of the API. Used for container health checks and deployment verification.
+* **Returns:** `200 OK` `{"status": "ok"}`
 
 ---
 
@@ -254,6 +262,10 @@ Exposes the live FastAPI `App State` verifying both Two-Tower index memory, Redi
 ### **POST** `/api/v1/ml/rebuild-index`
 Manually queues a Python coroutine loop `asyncio.create_task(_rebuild_faiss_index(app))` overriding the standard 30-minute Redis trigger. This natively spins PyTorch weights and embeds all mapped UUID video features into the dense Index parameters array instantly.
 * **Returns:** `200 OK` `{"status": "rebuild triggered"}`
+
+### **POST** `/api/v1/ml/reload-model`
+Forces the API to reload the PyTorch model (`two_tower.pt`) from the storage volume without restarting the container. This is useful after the worker finishes a training cycle.
+* **Returns:** `200 OK` `{"status": "success", "detail": "Model reloaded"}`
 
 ### **POST** `/api/v1/content/categories`
 Bootstraps a core static content genre pool type.
