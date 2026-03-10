@@ -1,20 +1,32 @@
 # AURORA-VRS API Documentation
+> **Integration Guide for Dashboard Team**
 
-This document officially outlines every available API endpoint natively built into the AURORA-VRS backend system serving on port **8080** (Docker mapped from 8000).
+## 🌐 API Connectivity
+*   **Base URL:** `http://62.84.176.140:8080` (Standard communication port)
+*   **API Path:** `/api/v1/`
+*   **Format:** JSON (UTF-8)
 
 ---
 
-## 🛠️ System (`api/main.py`)
-
+## 🛠️ System Overview
 ### **GET** `/health`
-Returns the operational status of the API. Used for container health checks and deployment verification.
+Returns the operational status of the API.
 * **Returns:** `200 OK` `{"status": "ok"}`
 
 ---
 
-## 🔐 Authentication (`api/routers/auth.py`)
+## 🔐 Authentication & Authorization
+The AuroraVRS API uses **JWT (JSON Web Tokens)** for secure authentication. 
 
-All protected endpoints require an `Authorization: Bearer <token>` HTTP header.
+### **Dashboard Workflow**
+1.  **Identity Check**: Call `/api/v1/auth/login`.
+2.  **Role Verification**: After login, call `/api/v1/users/me`.
+    *   Inspect `role`: If it is `"ADMIN"`, the dashboard should unlock management features.
+3.  **Token Persistence**: Save the `access_token`. 
+4.  **Header Usage**: Include the token in **every** subsequent request:
+    `Authorization: Bearer <access_token>`
+
+---
 
 ### **POST** `/api/v1/auth/register`
 Creates a new user account securely hashed with `bcrypt`.
@@ -241,35 +253,22 @@ Mutates a text string attachment string onto the given Video. **Requires Bearer 
 
 ---
 
-## ⚙️ Administration & ML Health (`api/main.py` & `api/routers/misc.py`)
+---
 
-**ALL endpoints in this section strictly require an `Authorization: Bearer <token>` where the JWT explicitly issues `"role": "ADMIN"`.**
+## 🔒 Administrative Operations
+Every endpoint in this block strictly requires an `ADMIN` role claim. The server will return `403 Forbidden` for standard `USER` tokens.
 
-### **GET** `/api/v1/ml/status`
-Exposes the live FastAPI `App State` verifying both Two-Tower index memory, Redis fallback flags, and FAISS dimensional sizing.
-* **Returns (200 OK):** 
-  ```json
-  {
-    "model_loaded": true,
-    "model_path": "/app/storage/models/two_tower.pt",
-    "faiss_size": 200,
-    "faiss_ready": true,
-    "min_events_threshold": 100,
-    "two_tower_active": true
-  }
-  ```
+### **GET** `/api/v1/ml/status` `[ADMIN ONLY]`
+Exposes the live FastAPI internal state for ML components.
 
-### **POST** `/api/v1/ml/rebuild-index`
-Manually queues a Python coroutine loop `asyncio.create_task(_rebuild_faiss_index(app))` overriding the standard 30-minute Redis trigger. This natively spins PyTorch weights and embeds all mapped UUID video features into the dense Index parameters array instantly.
-* **Returns:** `200 OK` `{"status": "rebuild triggered"}`
+### **POST** `/api/v1/ml/rebuild-index` `[ADMIN ONLY]`
+Recursively embeds all mapped UUID video features into the dense Vector Index.
 
-### **POST** `/api/v1/ml/reload-model`
-Forces the API to reload the PyTorch model (`two_tower.pt`) from the storage volume without restarting the container. This is useful after the worker finishes a training cycle.
-* **Returns:** `200 OK` `{"status": "success", "detail": "Model reloaded"}`
+### **POST** `/api/v1/ml/reload-model` `[ADMIN ONLY]`
+Refreshes the live model weights from the storage volume.
 
-### **POST** `/api/v1/content/categories`
-Bootstraps a core static content genre pool type.
-* **Payload:** `{"name": "Action"}`
+### **POST** `/api/v1/content/categories` `[ADMIN ONLY]`
+Registers a new high-level category in the system taxonomy.
 
 ---
 

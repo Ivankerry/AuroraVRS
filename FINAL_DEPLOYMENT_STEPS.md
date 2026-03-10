@@ -14,7 +14,7 @@ Before connecting to the VPS, ensure all fixes are committed and pushed to your 
 ## 2. Connect and Setup VPS
 1. **SSH into your VPS**:
    ```bash
-   ssh root@<YOUR_VPS_IP>
+   ssh root@62.84.176.140
    ```
 2. **Clone your repository**:
    ```bash
@@ -79,7 +79,7 @@ chmod +x deploy.sh
 2. **Access the API**:
    The API is mapped to port **8080** on your VPS.
    - **Internal test**: `curl http://localhost:8080/health`
-   - **External test**: `http://<YOUR_VPS_IP>:8080/health`
+   - **External test**: `http://62.84.176.140:8080/health`
    
 3. **Watch the Training Logs**:
    ```bash

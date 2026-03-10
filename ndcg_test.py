@@ -7,7 +7,7 @@ import numpy as np
 from collections import defaultdict
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BASE_URL     = "http://localhost:8080/api/v1"
+BASE_URL     = "http://62.84.176.140:8080/api/v1"
 DATABASE_URL = "postgresql://user:pass@localhost:5432/db"
 
 # 2 users only
