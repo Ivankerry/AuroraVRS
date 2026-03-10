@@ -2,7 +2,11 @@ import asyncio
 import asyncpg
 import json
 
-DATABASE_URL = "postgresql://user:pass@localhost:5432/db"
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+if DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 async def backfill():
     print("🔌 Connecting to DB...")

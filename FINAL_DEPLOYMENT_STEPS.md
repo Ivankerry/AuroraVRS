@@ -101,6 +101,11 @@ If you want to train on the 1 million YouTube interactions:
    docker compose exec worker python /app/seed_kaggle.py
    ```
    *This will take about 5–10 minutes to process all 1M rows.*
+3. **Run User Interest Backfill**:
+   ```bash
+   docker compose exec worker python /app/backfill_iv.py
+   ```
+   *This summarizes the 1M events into user profiles that the model needs for training.*
 
 ---
 

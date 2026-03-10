@@ -46,6 +46,7 @@ services:
       - ./worker:/app
       - ./api/core:/app/core
       - ./seed_kaggle.py:/app/seed_kaggle.py
+      - ./backfill_iv.py:/app/backfill_iv.py
       - ./youtube_recommendation_data.csv:/app/youtube_recommendation_data.csv
       - model_storage:/app/storage/models
     depends_on:
