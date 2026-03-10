@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  db:
+    image: ankane/pgvector:v0.5.1
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: db
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  api:
+    build:
+      context: ./api
+    ports:
+      - "127.0.0.1:8080:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/db
+      REDIS_URL: redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./api:/app
+      - model_storage:/app/storage/models
+    depends_on:
+      - db
+      - redis
+
+  worker:
+    build:
+      context: ./worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/db
+      REDIS_URL: redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./worker:/app
+      - ./api/core:/app/core
+      - model_storage:/app/storage/models
+    depends_on:
+      - db
+      - redis
+
+volumes:
+  pgdata:
+  model_storage:
