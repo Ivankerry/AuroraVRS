@@ -28,7 +28,7 @@ class PrivacyUpdate(BaseModel):
 async def upload_video(
     title: str = Form(...),
     description: Optional[str] = Form(None),
-    type: str = Form(...),
+    type: Optional[str] = Form("QUICK"),
     privacy: str = Form("PUBLIC"),
     category_ids: Optional[str] = Form("[]"),
     tag_ids: Optional[str] = Form("[]"),

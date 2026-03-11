@@ -37,13 +37,13 @@ The upload endpoint uses `multipart/form-data`.
 ### Form Fields:
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `file` | File | The video file (binary) |
-| `title` | String | Title of the video |
+| `file` | File | **(Required)** The video file (binary) |
+| `title` | String | **(Required)** Title of the video |
 | `description`| String | (Optional) Description |
-| `type` | String | e.g., `QUICK` or `LONG` |
-| `privacy` | String | `PUBLIC` or `PRIVATE` |
-| `category_ids`| String (JSON) | List of UUIDs: `["guid1", "guid2"]` |
-| `tag_ids` | String (JSON) | List of UUIDs: `["guid3"]` |
+| `type` | String | (Optional) e.g., `QUICK` or `LONG`. Defaults to `QUICK`. |
+| `privacy` | String | (Optional) `PUBLIC` or `PRIVATE`. Defaults to `PUBLIC`. |
+| `category_ids`| String (JSON) | (Optional) List of UUIDs: `["guid1"]`. Defaults to `[]`. |
+| `tag_ids` | String (JSON) | (Optional) List of UUIDs: `["guid2"]`. Defaults to `[]`. |
 
 ### Flutter (Dio) Example:
 ```dart
