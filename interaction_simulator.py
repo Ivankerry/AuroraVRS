@@ -24,26 +24,38 @@ PERSONAS = {
     "Joker":          ["Comedy"],
     "Fantasy Nerd":   ["Fantasy"],
     "Tech/Gamer":     ["Tech", "Gaming"],
+    "Music/Comedy":   ["Music", "Comedy"],
+    "Sci-Fi/Tech":    ["Sci-Fi", "Tech"],
+    "Drama/Comedy":   ["Drama", "Comedy"],
+    "Gaming/Edu":     ["Gaming", "Education"],
     "Omnivore":       ["Tech", "Gaming", "Music", "Comedy", "Education", "Sci-Fi", "Drama"]
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def register_or_login(email):
-    # Try to register
-    r = requests.post(f"{API_URL}/auth/register", json={
-        "email": email,
-        "password": "bot_password_123!",
-        "full_name": "Bot User"
-    })
+    try:
+        # Try to register
+        r = requests.post(f"{API_URL}/auth/register", json={
+            "email": email,
+            "password": "bot_password_123!",
+            "full_name": "Bot User"
+        }, timeout=10)
+        
+        # If already exists, login
+        if r.status_code != 201:
+            r = requests.post(f"{API_URL}/auth/login", data={
+                "username": email,
+                "password": "bot_password_123!"
+            }, timeout=10)
+        
+        if r.status_code in (200, 201):
+            return r.json().get("access_token")
+        else:
+            print(f"  ❌ Failed to auth {email}: {r.status_code} - {r.text[:50]}")
+    except Exception as e:
+        print(f"  ❌ Connection error for {email}: {e}")
     
-    # If already exists, login
-    if r.status_code != 201:
-        r = requests.post(f"{API_URL}/auth/login", data={
-            "username": email,
-            "password": "bot_password_123!"
-        })
-    
-    return r.json().get("access_token")
+    return None
 
 def fire_interaction(token, video_id, event_type, watch_ratio=1.0):
     try:
@@ -102,7 +114,9 @@ async def main():
     print(f"🤖 Initializing {args.bots} user personas...")
     for i in range(args.bots):
         persona_name = random.choice(list(PERSONAS.keys()))
-        email = f"bot_{i}_{int(time.time())}@aurora-vrs.internal"
+        # Use a stable bot index so we don't create 1000s of users every time
+        bot_idx = i % args.bots 
+        email = f"stable_bot_{bot_idx}@aurora-vrs.internal"
         token = register_or_login(email)
         if token:
             bots.append({
@@ -111,6 +125,13 @@ async def main():
                 "persona": persona_name,
                 "interests": PERSONAS[persona_name]
             })
+
+    if not bots:
+        print("\n❌ CRITICAL: No bots were successfully initialized.")
+        print("   If running inside Docker, ensure API_URL is http://api:8000/api/v1")
+        return
+
+    print(f"  ✅ {len(bots)} bots ready for action.")
 
     # 2. Fire Events
     print(f"🔥 Generating {args.events} signals...")
