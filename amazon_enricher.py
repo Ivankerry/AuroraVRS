@@ -36,10 +36,10 @@ async def enrich_from_amazon(jsonl_path=None):
     
     for cat in categories:
         await conn.execute("""
-            INSERT INTO categories (id, name, description)
-            VALUES ($1, $2, $3)
+            INSERT INTO categories (id, name)
+            VALUES ($1, $2)
             ON CONFLICT (name) DO NOTHING
-        """, uuid.uuid4(), cat, f"Amazon-sourced {cat} content")
+        """, uuid.uuid4(), cat)
 
     # 2. Add Anchor Videos
     print(f"\n🎥 Injecting Semantic Anchor Videos...")
