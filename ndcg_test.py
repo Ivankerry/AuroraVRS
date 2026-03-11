@@ -174,18 +174,23 @@ async def main():
     print(f"\n📊 TRIGGERING MODEL SYNC & REBUILD ON VPS...")
     try:
         # Note: This requires the first test user to be promoted to ADMIN
-        r = requests.post(f"{BASE_URL}/ml/rebuild-index", headers=auth_headers(users_data[0]["token"]), timeout=15)
+        # We try to use the first user created in this session
+        admin_token = users_data[0]["token"]
+        r = requests.post(f"{BASE_URL}/ml/rebuild-index", headers=auth_headers(admin_token), timeout=20)
         if r.status_code == 200:
             print("  ✅ ML Sync Triggered (Retrain scheduled + FAISS reload)")
+        elif r.status_code == 403:
+            print("  ⚠️  ML Sync DENIED (403): User is not an ADMIN.")
+            print("      FIX: Run the SQL command I sent to promote a user to ADMIN.")
         else:
-            print(f"  ⚠️  ML Sync Status: {r.status_code}. (Hint: Promote first user to ADMIN)")
+            print(f"  ⚠️  ML Sync Status: {r.status_code}. Details: {r.text}")
     except Exception as e:
         print(f"  ⚠️  ML Sync Trigger failed: {e}")
 
     print(f"\n⏳ WAITING 60s FOR WORKER TO GESTATE & RELOAD MODEL...")
-    for i in range(60, 0, -1):
-        if i % 15 == 0: print(f"  ... {i}s remaining")
-        time.sleep(1)
+    for i in range(60, 0, -5):
+        print(f"  ... {i}s remaining")
+        time.sleep(5)
 
     print(f"\n📊 EVALUATING FEED ALIGNMENT & PRECORE SCORES...")
     print(f"\n{'User':<20} {'Interests':<25} {'Hits@10':<8} {'NDCG@10':<10} {'Align@10'}")
