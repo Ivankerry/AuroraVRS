@@ -15,6 +15,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/
 if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
+# Admin Credentials
+ADMIN_EMAIL = "testone@gmail.com"
+ADMIN_PASS  = "test123"
+
 # Milestone 2: 20 Users, Overlapping Interests
 USER_PROFILES = [
     {"name": "Tech Enthusiast",   "cats": ["Tech"]},
@@ -173,15 +177,20 @@ async def main():
     # Step 3: Evaluation
     print(f"\n📊 TRIGGERING MODEL SYNC & REBUILD ON VPS...")
     try:
-        # Note: This requires the first test user to be promoted to ADMIN
-        # We try to use the first user created in this session
-        admin_token = users_data[0]["token"]
-        r = requests.post(f"{BASE_URL}/ml/rebuild-index", headers=auth_headers(admin_token), timeout=20)
+        # Get Admin Token for rebuilding index
+        print(f"  🔑 Logging in as system admin ({ADMIN_EMAIL})...")
+        admin_token = login(ADMIN_EMAIL, ADMIN_PASS)
+        if not admin_token:
+            print("  ⚠️  Admin Login FAILED. Trying to promote first test user instead...")
+            # Fallback to promoting first user (requires manual SQL usually, but if they are already promoted it works)
+            admin_token = users_data[0]["token"]
+            
+        r = requests.post(f"{BASE_URL}/ml/rebuild-index", headers=auth_headers(admin_token), timeout=30)
         if r.status_code == 200:
-            print("  ✅ ML Sync Triggered (Retrain scheduled + FAISS reload)")
+            print("  ✅ ML Sync Triggered Successfully (Retrain + FAISS reload).")
         elif r.status_code == 403:
-            print("  ⚠️  ML Sync DENIED (403): User is not an ADMIN.")
-            print("      FIX: Run the SQL command I sent to promote a user to ADMIN.")
+            print(f"  ⚠️  ML Sync DENIED (403): User {ADMIN_EMAIL} is not an ADMIN.")
+            print("      FIX: Run the SQL command to promote this specific email.")
         else:
             print(f"  ⚠️  ML Sync Status: {r.status_code}. Details: {r.text}")
     except Exception as e:
