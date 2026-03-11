@@ -49,6 +49,7 @@ services:
       - ./backfill_iv.py:/app/backfill_iv.py
       - ./youtube_recommendation_data.csv:/app/youtube_recommendation_data.csv
       - ./ndcg_test.py:/app/ndcg_test.py
+      - ./amazon_enricher.py:/app/amazon_enricher.py
       - model_storage:/app/storage/models
     depends_on:
       - db
