@@ -42,6 +42,14 @@ async def upload_video(
     if not tag_ids or tag_ids.strip() == "":
         tag_ids = "[]"
 
+    # Normalize type to match DB constraints
+    if type and type.upper() == "LONG":
+        type = "LONGFORM"
+    elif not type:
+        type = "QUICK"
+    else:
+        type = type.upper()
+
     # 1. Save file to disk
     v_id = str(uuid.uuid4())
     file_ext = os.path.splitext(file.filename)[1]
@@ -49,8 +57,12 @@ async def upload_video(
     storage_path = "/app/storage/videos"
     file_path = os.path.join(storage_path, filename)
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        logger.error(f"❌ FILE SYSTEM ERROR: Could not save video to {file_path}. Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File system error: {str(e)}")
     
     # 2. Add to database
     manifest_url = f"/api/v1/videos/content/{filename}"
@@ -72,20 +84,35 @@ async def upload_video(
         })
         
         # 3. Handle categories
-        cats = json.loads(category_ids)
+        try:
+            cats = json.loads(category_ids)
+            if not isinstance(cats, list):
+                cats = [cats] if cats else []
+        except:
+            cats = []
+
         for cat_id in cats:
-            await db.execute(text("INSERT INTO video_categories (video_id, category_id) VALUES (:v_id, :cat_id)"), {"v_id": v_id, "cat_id": cat_id})
+            if cat_id:
+                await db.execute(text("INSERT INTO video_categories (video_id, category_id) VALUES (:v_id, :cat_id)"), {"v_id": v_id, "cat_id": cat_id})
             
         # 4. Handle tags
-        tags = json.loads(tag_ids)
+        try:
+            tags = json.loads(tag_ids)
+            if not isinstance(tags, list):
+                tags = [tags] if tags else []
+        except:
+            tags = []
+
         for tag_id in tags:
-            await db.execute(text("INSERT INTO video_tags (video_id, tag_id) VALUES (:v_id, :tag_id)"), {"v_id": v_id, "tag_id": tag_id})
+            if tag_id:
+                await db.execute(text("INSERT INTO video_tags (video_id, tag_id) VALUES (:v_id, :tag_id)"), {"v_id": v_id, "tag_id": tag_id})
             
         await db.commit()
     except Exception as e:
         await db.rollback()
         if os.path.exists(file_path):
             os.remove(file_path)
+        logger.error(f"❌ DATABASE ERROR during upload: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     return {"status": "success", "video_id": v_id, "manifest_url": manifest_url}
