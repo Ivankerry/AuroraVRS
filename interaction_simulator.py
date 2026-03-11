@@ -32,34 +32,47 @@ PERSONAS = {
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def register_or_login(email):
-    try:
-        # Try to register
-        r = requests.post(f"{API_URL}/auth/register", json={
-            "email": email,
-            "password": "bot_password_123!",
-            "names": "Bot User"
-        }, timeout=10)
-        
-        # If already exists, login
-        if r.status_code != 201:
-            r = requests.post(f"{API_URL}/auth/login", json={
+session = requests.Session()
+
+def register_or_login(email, retry_count=3):
+    for attempt in range(retry_count):
+        try:
+            # Try to register
+            r = session.post(f"{API_URL}/auth/register", json={
                 "email": email,
-                "password": "bot_password_123!"
+                "password": "bot_password_123!",
+                "names": "Bot User"
             }, timeout=10)
-        
-        if r.status_code in (200, 201):
-            return r.json().get("access_token")
-        else:
+            
+            # If already exists, login
+            if r.status_code != 201:
+                r = session.post(f"{API_URL}/auth/login", json={
+                    "email": email,
+                    "password": "bot_password_123!"
+                }, timeout=10)
+            
+            if r.status_code in (200, 201):
+                return r.json().get("access_token")
+            
+            # If rate limited (429) or server error (50x), sleep and retry
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(1 * (attempt + 1))
+                continue
+                
             print(f"  ❌ Failed to auth {email}: {r.status_code} - {r.text[:100]}")
-    except Exception as e:
-        print(f"  ❌ Connection error for {email}: {e}")
+            break
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt < retry_count - 1:
+                wait = (attempt + 1) * 2
+                time.sleep(wait)
+                continue
+            print(f"  ❌ Connection error for {email}: {e}")
     
     return None
 
 def fire_interaction(token, video_id, event_type, watch_ratio=1.0):
     try:
-        requests.post(
+        session.post(
             f"{API_URL}/events",
             headers={"Authorization": f"Bearer {token}"},
             json={
@@ -125,6 +138,9 @@ async def main():
                 "persona": persona_name,
                 "interests": PERSONAS[persona_name]
             })
+        
+        # Pacing: Avoid overwhelming the server auth layer
+        time.sleep(random.uniform(0.1, 0.3))
 
     if not bots:
         print("\n❌ CRITICAL: No bots were successfully initialized.")
