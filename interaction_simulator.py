@@ -38,20 +38,20 @@ def register_or_login(email):
         r = requests.post(f"{API_URL}/auth/register", json={
             "email": email,
             "password": "bot_password_123!",
-            "full_name": "Bot User"
+            "names": "Bot User"
         }, timeout=10)
         
         # If already exists, login
         if r.status_code != 201:
-            r = requests.post(f"{API_URL}/auth/login", data={
-                "username": email,
+            r = requests.post(f"{API_URL}/auth/login", json={
+                "email": email,
                 "password": "bot_password_123!"
             }, timeout=10)
         
         if r.status_code in (200, 201):
             return r.json().get("access_token")
         else:
-            print(f"  ❌ Failed to auth {email}: {r.status_code} - {r.text[:50]}")
+            print(f"  ❌ Failed to auth {email}: {r.status_code} - {r.text[:100]}")
     except Exception as e:
         print(f"  ❌ Connection error for {email}: {e}")
     
