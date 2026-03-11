@@ -50,6 +50,7 @@ services:
       - ./youtube_recommendation_data.csv:/app/youtube_recommendation_data.csv
       - ./ndcg_test.py:/app/ndcg_test.py
       - ./amazon_enricher.py:/app/amazon_enricher.py
+      - ./interaction_simulator.py:/app/interaction_simulator.py
       - model_storage:/app/storage/models
     depends_on:
       - db
