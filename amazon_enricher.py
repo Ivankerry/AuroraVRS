@@ -255,11 +255,15 @@ async def enrich_from_amazon():
         desc = movie.get("desc")
         cats = movie.get("cats", [])
         
-        # Insert video
+        # Insert video only if title doesn't exist to avoid duplicates
+        exists = await conn.fetchval("SELECT id FROM videos WHERE title = $1 LIMIT 1", title)
+        if exists:
+            # print(f"  ⏩ Skipping (already exists): {title[:30]}...")
+            continue
+
         await conn.execute("""
             INSERT INTO videos (id, title, description, privacy, status, created_at, view_count, like_count, duration_sec)
             VALUES ($1, $2, $3, 'PUBLIC', 'READY', $4, $5, $6, $7)
-            ON CONFLICT (title) DO NOTHING
         """, v_id, title, desc, now, random.randint(100, 1000), random.randint(10, 50), random.randint(30, 180))
         
         # Link to categories
