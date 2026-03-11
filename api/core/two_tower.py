@@ -12,20 +12,24 @@ class TwoTowerModel(nn.Module):
         self._build_networks()
 
     def _build_networks(self):
-        # User Tower
+        # User Tower (Wider & Deeper for multi-modal interests)
         self.user_tower = nn.Sequential(
-            nn.Linear(384 + 2, 128),
+            nn.Linear(384 + 2, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 128)
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128)
         )
         
-        # Video Tower
+        # Video Tower (Wider & Deeper)
         self.video_tower = nn.Sequential(
-            nn.Linear(384 + 5, 128),
+            nn.Linear(384 + 5, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 128)
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128)
         )
 
     def forward(self, user_features, video_features):

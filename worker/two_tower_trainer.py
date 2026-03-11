@@ -104,6 +104,20 @@ def prepare_dataset(records, vocab, video_tag_map):
         tag_weights = r['user_tag_weights'] or {}
         if isinstance(tag_weights, str):
             tag_weights = json.loads(tag_weights)
+
+        # Milestone 3: Multi-Interest Jittering
+        # If a user has multiple interests, we occasionally "boost" the category of the
+        # current positive video during training. This teaches the User Tower that 
+        # a blended vector is still a strong match for its individual components.
+        if len(tag_weights) > 1 and is_pos:
+            # Find the tag of the current positive video
+            v_tags = video_tag_map.get(vid, [])
+            if v_tags:
+                jittered_weights = tag_weights.copy()
+                for v_tag in v_tags:
+                    if str(v_tag) in jittered_weights:
+                        jittered_weights[str(v_tag)] *= 1.5 # Boost current interest
+                tag_weights = jittered_weights
             
         event_count = min(r['event_count'], 10000) / 10000.0
         
