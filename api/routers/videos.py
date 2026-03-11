@@ -30,12 +30,18 @@ async def upload_video(
     description: Optional[str] = Form(None),
     type: str = Form(...),
     privacy: str = Form("PUBLIC"),
-    category_ids: str = Form("[]"),
-    tag_ids: str = Form("[]"),
+    category_ids: Optional[str] = Form("[]"),
+    tag_ids: Optional[str] = Form("[]"),
     file: UploadFile = File(...),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db)
 ):
+    # Sanitize JSON inputs
+    if not category_ids or category_ids.strip() == "":
+        category_ids = "[]"
+    if not tag_ids or tag_ids.strip() == "":
+        tag_ids = "[]"
+
     # 1. Save file to disk
     v_id = str(uuid.uuid4())
     file_ext = os.path.splitext(file.filename)[1]
