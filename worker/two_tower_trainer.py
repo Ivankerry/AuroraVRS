@@ -10,6 +10,7 @@ from datetime import datetime
 import json
 
 import asyncpg
+import hashlib
 from core.two_tower import TwoTowerModel
 
 logging.basicConfig(level=logging.INFO)
@@ -81,8 +82,13 @@ def prepare_dataset(records, vocab, video_tag_map):
             logger.info(f"Dataset preparation progress: {i}/{len(records)} records...")
             
         vid = r['video_id']
+        u_id = r['user_id']
+        
+        # Milestone 4: Hybrid CF Hashing
+        u_idx = int(hashlib.md5(str(u_id).encode()).hexdigest(), 16) % 20000
+        v_idx = int(hashlib.md5(str(vid).encode()).hexdigest(), 16) % 20000
+
         if vid not in video_features:
-            # strip timezone info if postgres returns aware datetimes
             vid_created = r['video_created_at']
             if vid_created.tzinfo:
                 vid_created = vid_created.replace(tzinfo=None)
@@ -90,6 +96,7 @@ def prepare_dataset(records, vocab, video_tag_map):
             age_hours = (now - vid_created).total_seconds() / 3600.0
             video_features[vid] = {
                 'tag_ids': video_tag_map.get(vid, []),
+                'v_idx': v_idx,
                 'view_count': math.log1p(r['view_count'] or 0),
                 'like_rate': (r['like_count'] or 0) / max(r['view_count'] or 1, 1),
                 'avg_watch_ratio': r['video_avg_watch_ratio'] or 0.0,
@@ -105,28 +112,27 @@ def prepare_dataset(records, vocab, video_tag_map):
         if isinstance(tag_weights, str):
             tag_weights = json.loads(tag_weights)
 
-        # Milestone 3: Multi-Interest Jittering
-        # If a user has multiple interests, we occasionally "boost" the category of the
-        # current positive video during training. This teaches the User Tower that 
-        # a blended vector is still a strong match for its individual components.
         if len(tag_weights) > 1 and is_pos:
-            # Find the tag of the current positive video
             v_tags = video_tag_map.get(vid, [])
             if v_tags:
                 jittered_weights = tag_weights.copy()
                 for v_tag in v_tags:
                     if str(v_tag) in jittered_weights:
-                        jittered_weights[str(v_tag)] *= 1.5 # Boost current interest
+                        jittered_weights[str(v_tag)] *= 1.5 
                 tag_weights = jittered_weights
             
         event_count = min(r['event_count'], 10000) / 10000.0
-        
         user_created = r['user_created_at']
         if user_created.tzinfo:
             user_created = user_created.replace(tzinfo=None)
             
         acc_age = min((now - user_created).days, 3650) / 3650.0
-        u_feat = {'tag_weights': tag_weights, 'event_count': event_count, 'account_age_days': acc_age}
+        u_feat = {
+            'tag_weights': tag_weights, 
+            'event_count': event_count, 
+            'account_age_days': acc_age,
+            'u_idx': u_idx
+        }
         
         negatives = []
         for _ in range(4):
@@ -145,35 +151,41 @@ def prepare_dataset(records, vocab, video_tag_map):
 
 class TwoTowerDataset(torch.utils.data.Dataset):
     def __init__(self, pairs, video_features, vocab, num_tags, tag_embeddings):
-        # pairs have already been filtered for is_positive in outer loop now
         self.pairs = pairs
         self.video_features = video_features
         self.vocab = vocab
         self.num_tags = num_tags
         self.tag_embeddings = tag_embeddings
 
-    def __len__(self): return len(self.pairs)
+    def __len__(self):
+        return len(self.pairs)
 
     def _get_v_tensor(self, vid):
-        v_feat = self.video_features[vid]
-        v_tensor = torch.zeros(384 + 5, dtype=torch.float32)
-        
-        tag_vectors = [self.tag_embeddings[str(t_id)] for t_id in v_feat['tag_ids'] if str(t_id) in self.tag_embeddings]
-        if tag_vectors:
-            v_tensor[:384] = torch.tensor(np.mean(tag_vectors, axis=0), dtype=torch.float32)
+        feat = self.video_features.get(vid)
+        if not feat:
+            return torch.zeros(384 + 5, dtype=torch.float32), 0
             
-        v_tensor[384] = float(v_feat['view_count'])
-        v_tensor[384+1] = float(v_feat['like_rate'])
-        v_tensor[384+2] = float(v_feat['avg_watch_ratio'])
-        v_tensor[384+3] = float(v_feat['age_hours_normalized'])
-        v_tensor[384+4] = float(v_feat['duration_normalized'])
-        return v_tensor
+        vectors = [self.tag_embeddings[str(tag_id)] for tag_id in feat['tag_ids'] if str(tag_id) in self.tag_embeddings]
+        if vectors:
+            tag_vector = np.mean(vectors, axis=0)
+        else:
+            tag_vector = np.zeros(384, dtype=np.float32)
+            
+        v_meta = torch.tensor([
+            feat['view_count'] / 15.0,
+            feat['like_rate'],
+            feat['avg_watch_ratio'],
+            feat['age_hours_normalized'],
+            feat['duration_normalized']
+        ], dtype=torch.float32)
+        
+        return torch.cat([torch.tensor(tag_vector, dtype=torch.float32), v_meta]), feat['v_idx']
 
     def __getitem__(self, idx):
-        pair = self.pairs[idx]
-        u_feat = pair['u_feat']
-        pos_vid = pair['pos_vid']
-        neg_vids = pair['negatives']
+        item = self.pairs[idx]
+        u_feat = item['u_feat']
+        pos_vid = item['pos_vid']
+        neg_vids = item['negatives']
         
         vectors = []
         weights = []
@@ -182,30 +194,48 @@ class TwoTowerDataset(torch.utils.data.Dataset):
                 vectors.append(self.tag_embeddings[str(t_id)])
                 weights.append(float(w))
                 
-        u_tensor = torch.zeros(384 + 2, dtype=torch.float32)
+        u_content = torch.zeros(384 + 2, dtype=torch.float32)
         if vectors:
-            u_tensor[:384] = torch.tensor(np.average(vectors, axis=0, weights=weights), dtype=torch.float32)
+            u_content[:384] = torch.tensor(np.average(vectors, axis=0, weights=weights), dtype=torch.float32)
             
-        u_tensor[384] = float(u_feat['event_count'])
-        u_tensor[384+1] = float(u_feat['account_age_days'])
+        u_content[384] = float(u_feat['event_count'])
+        u_content[384+1] = float(u_feat['account_age_days'])
         
-        pos_v_tensor = self._get_v_tensor(pos_vid)
-        neg_v_tensors = torch.stack([self._get_v_tensor(nv) for nv in neg_vids])
+        u_idx = u_feat['u_idx']
         
-        return u_tensor, pos_v_tensor, neg_v_tensors
+        pos_v_tensor, pos_v_idx = self._get_v_tensor(pos_vid)
+        
+        neg_v_tensors = []
+        neg_v_indices = []
+        for nv in neg_vids:
+            vt, vi = self._get_v_tensor(nv)
+            neg_v_tensors.append(vt)
+            neg_v_indices.append(vi)
+            
+        return (
+            u_content, u_idx, 
+            pos_v_tensor, pos_v_idx, 
+            torch.stack(neg_v_tensors), torch.tensor(neg_v_indices, dtype=torch.long)
+        )
 
 def evaluate_model(model, val_loader, device):
     model.eval()
     val_loss = 0
     with torch.no_grad():
-        for u_batch, pos_v_batch, neg_v_batch in val_loader:
-            u_batch = u_batch.to(device)
-            pos_v_batch = pos_v_batch.to(device)
-            neg_v_batch = neg_v_batch.to(device)
+        for u_batch, u_idx, pos_v_batch, pos_v_idx, neg_v_batch, neg_v_idx in val_loader:
+            u_batch, u_idx = u_batch.to(device), u_idx.to(device)
+            pos_v_batch, pos_v_idx = pos_v_batch.to(device), pos_v_idx.to(device)
+            neg_v_batch, neg_v_idx = neg_v_batch.to(device), neg_v_idx.to(device)
             
-            u_emb, p_emb = model(u_batch, pos_v_batch)
+            u_emb, p_emb = model(u_batch, pos_v_batch, user_indices=u_idx, video_indices=pos_v_idx)
+            
             b, n, _ = neg_v_batch.size()
-            _, n_emb = model(u_batch, neg_v_batch.view(-1, neg_v_batch.size(-1)))
+            _, n_emb = model(
+                u_batch.repeat_interleave(n, dim=0), 
+                neg_v_batch.view(-1, neg_v_batch.size(-1)),
+                user_indices=u_idx.repeat_interleave(n, dim=0),
+                video_indices=neg_v_idx.view(-1)
+            )
             n_emb = n_emb.view(b, n, 128)
             
             p_scores = (u_emb * p_emb).sum(dim=1).unsqueeze(1) / 0.07
@@ -213,29 +243,33 @@ def evaluate_model(model, val_loader, device):
             
             logits = torch.cat([p_scores, n_scores], dim=1)
             labels = torch.zeros(logits.size(0), dtype=torch.long, device=device)
+            val_loss += nn.CrossEntropyLoss()(logits, labels).item()
             
-            loss = nn.CrossEntropyLoss()(logits, labels)
-            val_loss += loss.item()
     return val_loss / len(val_loader)
 
 def train_model(train_loader, val_loader, model, device, candidate_path: str) -> float:
     optimizer = optim.Adam(model.parameters(), lr=LR)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     best_loss = float('inf')
-    patience_counter = 0
 
     for epoch in range(EPOCHS):
         model.train()
-        for u_batch, pos_v_batch, neg_v_batch in train_loader:
-            u_batch = u_batch.to(device)
-            pos_v_batch = pos_v_batch.to(device)
-            neg_v_batch = neg_v_batch.to(device)
+        for u_batch, u_idx, pos_v_batch, pos_v_idx, neg_v_batch, neg_v_idx in train_loader:
+            u_batch, u_idx = u_batch.to(device), u_idx.to(device)
+            pos_v_batch, pos_v_idx = pos_v_batch.to(device), pos_v_idx.to(device)
+            neg_v_batch, neg_v_idx = neg_v_batch.to(device), neg_v_idx.to(device)
             
             optimizer.zero_grad()
             
-            u_emb, p_emb = model(u_batch, pos_v_batch)
+            u_emb, p_emb = model(u_batch, pos_v_batch, user_indices=u_idx, video_indices=pos_v_idx)
+            
             b, n, _ = neg_v_batch.size()
-            _, n_emb = model(u_batch, neg_v_batch.view(-1, neg_v_batch.size(-1)))
+            _, n_emb = model(
+                u_batch.repeat_interleave(n, dim=0), 
+                neg_v_batch.view(-1, neg_v_batch.size(-1)),
+                user_indices=u_idx.repeat_interleave(n, dim=0),
+                video_indices=neg_v_idx.view(-1)
+            )
             n_emb = n_emb.view(b, n, 128)
             
             p_scores = (u_emb * p_emb).sum(dim=1).unsqueeze(1) / 0.07
@@ -243,9 +277,7 @@ def train_model(train_loader, val_loader, model, device, candidate_path: str) ->
             
             logits = torch.cat([p_scores, n_scores], dim=1)
             labels = torch.zeros(logits.size(0), dtype=torch.long, device=device)
-            
             loss = nn.CrossEntropyLoss()(logits, labels)
-            
             loss.backward()
             optimizer.step()
             
@@ -281,6 +313,7 @@ async def generate_and_save_video_embeddings(conn, model):
                 
             age_norm = min((now - created_at).total_seconds() / 3600.0, 7200) / 7200.0
             emb = model.encode_video(
+                vid,
                 tag_map.get(vid, []), math.log1p(v['view_count'] or 0),
                 (v['like_count'] or 0) / max(v['view_count'] or 1, 1),
                 float(v['avg_watch_ratio'] or 0.0), age_norm, min(v['duration_sec'] or 0.0, 600) / 600.0

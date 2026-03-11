@@ -134,7 +134,7 @@ async def get_feed(
         import asyncio
         try:
             user_embedding = await asyncio.to_thread(
-                model.encode_user, interest_vector, event_count, account_age_days
+                model.encode_user, user_id, interest_vector, event_count, account_age_days
             )
             candidate_vids = await faiss_idx.search(user_embedding, 100)
             if candidate_vids:

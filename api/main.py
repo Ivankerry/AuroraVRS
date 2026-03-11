@@ -50,6 +50,7 @@ async def _rebuild_faiss_index(app: FastAPI):
                     likes = r['like_count'] or 0
                     emb = await asyncio.to_thread(
                         app.state.two_tower_model.encode_video,
+                        vid_str,
                         tag_map.get(vid_str, []),
                         math.log1p(views),
                         likes / max(views, 1),
