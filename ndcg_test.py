@@ -5,26 +5,47 @@ import asyncio
 import asyncpg
 import numpy as np
 from collections import defaultdict
-
 import os
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # If running inside Docker, use service names. If running from host, use VPS IP.
 BASE_URL     = os.getenv("API_URL", "http://62.84.176.140:8080/api/v1")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
 
-# Strip SQLAlchemy prefixes if they exist (asyncpg doesn't support them)
 if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
-# 2 users only
+# Milestone 2: 20 Users, Overlapping Interests
 USER_PROFILES = [
-    {"name": "Tech User 1",  "category": "Tech"},
-    {"name": "Music User 1", "category": "Music"},
+    {"name": "Tech Enthusiast",   "cats": ["Tech"]},
+    {"name": "Music Lover",        "cats": ["Music"]},
+    {"name": "Gamer",             "cats": ["Gaming"]},
+    {"name": "Educator",          "cats": ["Education"]},
+    {"name": "Comedy Fan",         "cats": ["Comedy"]},
+    
+    # Overlapping Interests (The "Blending" Test)
+    {"name": "Tech/Gamer",        "cats": ["Tech", "Gaming"]},
+    {"name": "Music/Comedy",      "cats": ["Music", "Comedy"]},
+    {"name": "Edu/Tech",          "cats": ["Education", "Tech"]},
+    {"name": "Gamer/Comedy",      "cats": ["Gaming", "Comedy"]},
+    {"name": "Music/Tech",        "cats": ["Music", "Tech"]},
+    {"name": "Gaming/Edu",        "cats": ["Gaming", "Education"]},
+    {"name": "Comedy/Edu",        "cats": ["Comedy", "Education"]},
+    {"name": "Tech/Music/Gamer",  "cats": ["Tech", "Music", "Gaming"]},
+    {"name": "Omnivore",          "cats": ["Tech", "Music", "Gaming", "Comedy", "Education"]},
+    
+    # Duplicate categories to reach 20
+    {"name": "Tech Lead",         "cats": ["Tech"]},
+    {"name": "Indie Listener",    "cats": ["Music"]},
+    {"name": "Pro Gamer",         "cats": ["Gaming"]},
+    {"name": "Professor",         "cats": ["Education"]},
+    {"name": "Joke Teller",       "cats": ["Comedy"]},
+    {"name": "Hardware Geek",     "cats": ["Tech", "Gaming"]},
 ]
 
-VIEWS_PER_USER = 150   # deep watch events
-LIKES_PER_USER = 200   # like events (these become ground truth)
-SKIPS_PER_USER = 30    # skip events on opposite category
+VIEWS_PER_USER = 100   # Sufficient for interaction signal
+LIKES_PER_USER = 150   # Ground truth
+SKIPS_PER_USER = 20    # Negative signal
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 def dcg(relevances):
@@ -37,86 +58,65 @@ def ndcg_at_k(recommended_ids, relevant_ids, k=10):
     ideal_dcg   = dcg(sorted(relevances, reverse=True))
     return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
 
-def precision_at_k(recommended_ids, relevant_ids, k=10):
-    top_k = recommended_ids[:k]
-    hits  = sum(1 for vid in top_k if vid in relevant_ids)
-    return hits / k
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def register(email, name, password):
-    r = requests.post(f"{BASE_URL}/auth/register", json={
-        "email": email, "password": password, "names": name
-    })
-    if r.status_code == 200:
-        return r.json()["access_token"]
+    try:
+        r = requests.post(f"{BASE_URL}/auth/register", json={
+            "email": email, "password": password, "names": name
+        }, timeout=10)
+        if r.status_code == 200: return r.json()["access_token"]
+    except: pass
+    
     r = requests.post(f"{BASE_URL}/auth/login", json={
         "email": email, "password": password
-    })
-    if r.status_code == 200:
-        return r.json()["access_token"]
-    raise Exception(f"Could not register or login {email}: {r.text}")
+    }, timeout=10)
+    if r.status_code == 200: return r.json()["access_token"]
+    raise Exception(f"Could not register/login {email}")
 
-def auth_headers(token):
-    return {"Authorization": f"Bearer {token}"}
+def auth_headers(token): return {"Authorization": f"Bearer {token}"}
 
-def fire_view(token, video_id, watch_ratio):
+async def get_video_categories(conn, video_ids):
+    if not video_ids: return {}
+    rows = await conn.fetch("""
+        SELECT v.id, c.name FROM videos v
+        JOIN video_categories vc ON v.id = vc.video_id
+        JOIN categories c ON vc.category_id = c.id
+        WHERE v.id = ANY($1::uuid[])
+    """, [id for id in video_ids])
+    v_cats = defaultdict(list)
+    for r in rows:
+        v_cats[str(r['id'])].append(r['name'])
+    return v_cats
+
+def fire_event(token, video_id, event_type, ratio=None):
     try:
-        r = requests.post(f"{BASE_URL}/events", json={
-            "video_id":    video_id,
-            "event_type":  "VIEW",
-            "watch_ratio": watch_ratio,
-            "metadata":    {}
-        }, headers=auth_headers(token), timeout=5)
+        url = f"{BASE_URL}/videos/{video_id}/like" if event_type == "LIKE" else f"{BASE_URL}/events"
+        payload = {"video_id": video_id, "event_type": event_type, "watch_ratio": ratio, "metadata": {}} if event_type != "LIKE" else None
+        r = requests.post(url, json=payload, headers=auth_headers(token), timeout=5)
         return r.status_code == 200
-    except:
-        return False
-
-def fire_like(token, video_id):
-    try:
-        r = requests.post(f"{BASE_URL}/videos/{video_id}/like",
-                          headers=auth_headers(token), timeout=5)
-        return r.status_code == 200
-    except:
-        return False
-
-def fire_skip(token, video_id):
-    try:
-        r = requests.post(f"{BASE_URL}/events", json={
-            "video_id":    video_id,
-            "event_type":  "SKIP",
-            "watch_ratio": round(random.uniform(0.0, 0.1), 2),
-            "metadata":    {}
-        }, headers=auth_headers(token), timeout=5)
-        return r.status_code == 200
-    except:
-        return False
+    except: return False
 
 def get_feed(token):
     try:
         r = requests.get(f"{BASE_URL}/feed", headers=auth_headers(token), timeout=10)
         return [v["id"] for v in r.json().get("videos", [])]
-    except:
-        return []
+    except: return []
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
-    print("\n" + "=" * 65)
-    print("       🧪 AURORA-VRS NDCG & PRECISION@10 EVALUATION")
-    print("=" * 65)
+    print("\n" + "═" * 80)
+    print("       🧪 AURORA-VRS MILESTONE 2: MULTI-INTEREST VECTOR BLENDING EVAL")
+    print("═" * 80)
     print(f"  Users         : {len(USER_PROFILES)}")
-    print(f"  Views/user    : {VIEWS_PER_USER}")
-    print(f"  Likes/user    : {LIKES_PER_USER}  ← ground truth")
-    print(f"  Skips/user    : {SKIPS_PER_USER}  ← negative signal")
-    print("=" * 65)
+    print(f"  Complexity    : Single, Dual, and Triple Interest Profiles")
+    print("═" * 80)
 
-    # ── Step 1: Fetch category video pools ───────────────────────────────────
-    print(f"\n📦 STEP 1: Loading video pools from database...")
     conn = await asyncpg.connect(DATABASE_URL)
-
-    categories = list(set(p["category"] for p in USER_PROFILES))
-    category_videos = {}
-
-    for cat in categories:
+    
+    # Load Video Pools
+    all_cats = list(set([c for p in USER_PROFILES for c in p["cats"]]))
+    cat_pools = {}
+    for cat in all_cats:
         ids = [str(r['id']) for r in await conn.fetch("""
             SELECT v.id FROM videos v
             JOIN video_categories vc ON v.id = vc.video_id
@@ -124,164 +124,101 @@ async def main():
             WHERE c.name = $1 AND v.privacy = 'PUBLIC' AND v.status = 'READY'
             LIMIT 500
         """, cat)]
-        category_videos[cat] = ids
-        print(f"  ✅ {cat:<12} : {len(ids)} videos available")
+        cat_pools[cat] = ids
+        print(f"  📦 Pool [{cat:<10}]: {len(ids)} videos")
+
+    # Step 2: Generation
+    timestamp = int(time.time())
+    users_data = []
+    
+    print(f"\n🚀 GENERATING INTERACTION SIGNALS...")
+    for idx, profile in enumerate(USER_PROFILES):
+        p_cats = profile["cats"]
+        name   = profile["name"]
+        email  = f"m2_{idx}_{timestamp}@aurora.com"
+        token  = register(email, name, "eval_pass_123!")
+        
+        print(f"  [{idx+1:02}/20] {name:<18} | Interests: {', '.join(p_cats)}")
+        
+        ground_truth_likes = set()
+        
+        # Mix categories for views/likes
+        for _ in range(VIEWS_PER_USER):
+            cat = random.choice(p_cats)
+            vid = random.choice(cat_pools[cat])
+            fire_event(token, vid, "VIEW", ratio=round(random.uniform(0.8, 1.0), 2))
+            
+        for _ in range(LIKES_PER_USER):
+            cat = random.choice(p_cats)
+            vid = random.choice(cat_pools[cat])
+            if fire_event(token, vid, "LIKE"):
+                ground_truth_likes.add(vid)
+                
+        # Skip garbage
+        other_cats = [c for c in all_cats if c not in p_cats]
+        if other_cats:
+            for _ in range(SKIPS_PER_USER):
+                cat = random.choice(other_cats)
+                if cat_pools.get(cat):
+                    vid = random.choice(cat_pools[cat])
+                    fire_event(token, vid, "SKIP", ratio=0.05)
+        
+        users_data.append({"name": name, "cats": p_cats, "token": token, "gt": ground_truth_likes})
+
+    print(f"\n⏳ WAITING 30s FOR VECTOR PROPAGATION & WORKER PROCESSING...")
+    for i in range(30, 0, -1):
+        if i % 5 == 0: print(f"  ... {i}s remaining")
+        time.sleep(1)
+
+    # Step 3: Evaluation
+    print(f"\n📊 EVALUATING FEED ALIGNMENT & PRECORE SCORES...")
+    print(f"\n{'User':<20} {'Interests':<25} {'Hits@10':<8} {'NDCG@10':<10} {'Align@10'}")
+    print("-" * 80)
+    
+    total_ndcg = []
+    total_align = []
+
+    for user in users_data:
+        feed = get_feed(user["token"])
+        if not feed:
+            print(f"{user['name']:<20} {'EMPTY FEED':<25}")
+            continue
+            
+        # Get cat metadata for feed
+        feed_cats = await get_video_categories(conn, feed[:10])
+        align_count = 0
+        for vid in feed[:10]:
+            v_cats = feed_cats.get(vid, [])
+            if any(c in user["cats"] for c in v_cats):
+                align_count += 1
+        
+        score_ndcg = ndcg_at_k(feed, user["gt"])
+        hits = sum(1 for vid in feed[:10] if vid in user["gt"])
+        
+        total_ndcg.append(score_ndcg)
+        total_align.append(align_count / 10.0)
+        
+        interests_str = ", ".join(user["cats"])
+        print(f"{user['name']:<20} {interests_str:<25} {hits:<8} {score_ndcg:<10.4f} {align_count}/10")
 
     await conn.close()
 
-    # ── Step 2: Create users and fire events ──────────────────────────────────
-    print(f"\n👤 STEP 2: Creating users and firing events...")
-    timestamp  = int(time.time())
-    user_results = []
-
-    for idx, profile in enumerate(USER_PROFILES):
-        cat      = profile["category"]
-        name     = profile["name"]
-        email    = f"ndcg_{cat.lower()}_{idx}_{timestamp}@test.com"
-        password = "ndcg_test_123!"
-
-        print(f"\n  [{idx+1}/{len(USER_PROFILES)}] {name} (loves {cat})")
-        print(f"    → Registering...")
-        token = register(email, name, password)
-        print(f"    ✅ Registered")
-
-        target_pool   = category_videos.get(cat, [])
-        opposite_cats = [c for c in categories if c != cat]
-        opposite_pool = []
-        for oc in opposite_cats:
-            opposite_pool.extend(category_videos.get(oc, [])[:50])
-
-        if len(target_pool) < 10:
-            print(f"    ❌ Not enough videos for {cat}, skipping")
-            continue
-
-        # Fire deep watch VIEW events
-        view_count = 0
-        for i in range(VIEWS_PER_USER):
-            vid = random.choice(target_pool)
-            if fire_view(token, vid, round(random.uniform(0.80, 1.0), 2)):
-                view_count += 1
-            if (i + 1) % 50 == 0:
-                print(f"    📌 Views: {view_count}/{VIEWS_PER_USER}")
-            time.sleep(0.02)
-        print(f"    ✅ {view_count} VIEW events fired (deep watches)")
-
-        # Fire LIKE events — these are our ground truth
-        liked_video_ids = set()
-        like_pool = random.sample(target_pool, min(LIKES_PER_USER * 3, len(target_pool)))
-        like_count = 0
-        for vid in like_pool:
-            if like_count >= LIKES_PER_USER:
-                break
-            if fire_like(token, vid):
-                liked_video_ids.add(vid)
-                like_count += 1
-            if like_count % 50 == 0 and like_count > 0:
-                print(f"    📌 Likes: {like_count}/{LIKES_PER_USER}")
-            time.sleep(0.02)
-        print(f"    ✅ {like_count} LIKE events fired → ground truth set ({len(liked_video_ids)} videos)")
-
-        # Fire SKIP events on opposite category
-        skip_count = 0
-        if opposite_pool:
-            for _ in range(SKIPS_PER_USER):
-                vid = random.choice(opposite_pool)
-                if fire_skip(token, vid):
-                    skip_count += 1
-                time.sleep(0.02)
-        print(f"    ✅ {skip_count} SKIP events fired on opposite categories")
-
-        user_results.append({
-            "name":       name,
-            "category":   cat,
-            "token":      token,
-            "liked_ids":  liked_video_ids,
-            "like_count": like_count,
-        })
-
-    # ── Step 3: Wait for interest vectors ────────────────────────────────────
-    print(f"\n⏳ STEP 3: Waiting 20 seconds for all interest vectors to update...")
-    for i in range(20, 0, -1):
-        print(f"  ... {i}s")
-        time.sleep(1)
-    print(f"  ✅ Done")
-
-    # ── Step 4: Fetch feeds and calculate scores ──────────────────────────────
-    print(f"\n📊 STEP 4: Fetching feeds and calculating scores...")
-    print()
-
-    all_ndcg      = []
-    all_precision = []
-
-    print(f"  {'User':<22} {'Cat':<12} {'Liked':<8} {'Hits@10':<10} {'NDCG@10':<10} Precision@10")
-    print(f"  {'-' * 72}")
-
-    for user in user_results:
-        feed_ids = get_feed(user["token"])
-        time.sleep(0.5)
-
-        if not feed_ids:
-            print(f"  {user['name']:<22} {user['category']:<12} — feed empty, skipping")
-            continue
-
-        ndcg_score = ndcg_at_k(feed_ids, user["liked_ids"], k=10)
-        prec_score = precision_at_k(feed_ids, user["liked_ids"], k=10)
-        hits       = sum(1 for vid in feed_ids[:10] if vid in user["liked_ids"])
-
-        all_ndcg.append(ndcg_score)
-        all_precision.append(prec_score)
-
-        if ndcg_score >= 0.3:
-            grade = "🟢 Strong"
-        elif ndcg_score >= 0.1:
-            grade = "🟡 Partial"
-        else:
-            grade = "🔴 Weak"
-
-        print(f"  {user['name']:<22} {user['category']:<12} {user['like_count']:<8} "
-              f"{hits:<10} {ndcg_score:<10.4f} {prec_score:.4f}  {grade}")
-
-    # ── Step 5: Final summary ─────────────────────────────────────────────────
-    print(f"\n{'=' * 65}")
-    print(f"  🏁 FINAL SCORES")
-    print(f"{'=' * 65}")
-
-    if all_ndcg:
-        avg_ndcg = np.mean(all_ndcg)
-        avg_prec = np.mean(all_precision)
-
-        print(f"  Average NDCG@10      : {avg_ndcg:.4f}")
-        print(f"  Average Precision@10 : {avg_prec:.4f}")
-        print()
-
-        if avg_ndcg >= 0.3:
-            print(f"  ✅ STRONG — Model is surfacing liked content effectively!")
-        elif avg_ndcg >= 0.1:
-            print(f"  ⚠️  PARTIAL — Model shows some personalization signal.")
-            print(f"      More training cycles will improve this score.")
-        else:
-            print(f"  ❌ WEAK — Model is not surfacing liked content well.")
-            print(f"      Ground truth videos rarely appear in top 10 recommendations.")
-
-        print()
-        print(f"  📌 Industry reference points:")
-        print(f"     NDCG@10 > 0.40  = Production-grade (Netflix/YouTube level)")
-        print(f"     NDCG@10 > 0.20  = Good for early-stage system")
-        print(f"     NDCG@10 > 0.10  = Model is learning, needs more data")
-        print(f"     NDCG@10 < 0.05  = Essentially random recommendations")
-        print(f"\n  Your score: {avg_ndcg:.4f} → ", end="")
-        if avg_ndcg >= 0.4:
-            print("Production-grade! 🚀")
-        elif avg_ndcg >= 0.2:
-            print("Good for early-stage! Keep training.")
-        elif avg_ndcg >= 0.1:
-            print("Learning. More events and training needed.")
-        else:
-            print("Needs work. Consider more training cycles.")
+    print("\n" + "═" * 80)
+    print("  🏁 MILESTONE 2 SUMMARY")
+    print("═" * 80)
+    avg_ndcg = np.mean(total_ndcg) if total_ndcg else 0
+    avg_align = np.mean(total_align) if total_align else 0
+    
+    print(f"  Avg NDCG@10           : {avg_ndcg:.4f}")
+    print(f"  Avg Interest Align@10 : {avg_align*100:.1f}%")
+    
+    if avg_align > 0.7 and avg_ndcg > 0.15:
+        print("\n  ✅ SUCCESS: System handles multi-interest blending effectively.")
+    elif avg_align > 0.5:
+        print("\n  🟡 WARNING: Personalization is working, but ranking (NDCG) is loose.")
     else:
-        print("  ❌ No scores calculated — check API connection.")
-
-    print(f"\n{'=' * 65}\n")
+        print("\n  ❌ FAILURE: Recommendations are not aligning with user multi-interest profiles.")
+    print("═" * 80 + "\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
