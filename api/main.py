@@ -102,9 +102,14 @@ async def lifespan(app: FastAPI):
         app.state.faiss_task.cancel()
 
 
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(lifespan=lifespan)
+
+# Create storage directory if not exists
+os.makedirs("/app/storage/videos", exist_ok=True)
+
+app.mount("/api/v1/videos/content", StaticFiles(directory="/app/storage/videos"), name="video-content")
 
 app.add_middleware(
     CORSMiddleware,

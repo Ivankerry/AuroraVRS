@@ -1,12 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from typing import Optional
+from typing import Optional, List
+import uuid
+import shutil
+import os
+import json
 from pydantic import BaseModel
 from core.db import get_db
 from core.auth import get_current_user_id, get_optional_user_id
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1/videos", tags=["videos"])
 
 class UploadStart(BaseModel):
     title: str
@@ -20,7 +24,67 @@ class CommentCreate(BaseModel):
 class PrivacyUpdate(BaseModel):
     privacy: str
 
-@router.post("/api/v1/videos/upload/start")
+@router.post("/upload")
+async def upload_video(
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    type: str = Form(...),
+    privacy: str = Form("PUBLIC"),
+    category_ids: str = Form("[]"),
+    tag_ids: str = Form("[]"),
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Save file to disk
+    v_id = str(uuid.uuid4())
+    file_ext = os.path.splitext(file.filename)[1]
+    filename = f"{v_id}{file_ext}"
+    storage_path = "/app/storage/videos"
+    file_path = os.path.join(storage_path, filename)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # 2. Add to database
+    manifest_url = f"/api/v1/videos/content/{filename}"
+    
+    try:
+        query = text("""
+            INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url) 
+            VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url)
+            RETURNING id
+        """)
+        await db.execute(query, {
+            "v_id": v_id,
+            "creator_id": user_id, 
+            "title": title, 
+            "description": description,
+            "type": type, 
+            "privacy": privacy,
+            "manifest_url": manifest_url
+        })
+        
+        # 3. Handle categories
+        cats = json.loads(category_ids)
+        for cat_id in cats:
+            await db.execute(text("INSERT INTO video_categories (video_id, category_id) VALUES (:v_id, :cat_id)"), {"v_id": v_id, "cat_id": cat_id})
+            
+        # 4. Handle tags
+        tags = json.loads(tag_ids)
+        for tag_id in tags:
+            await db.execute(text("INSERT INTO video_tags (video_id, tag_id) VALUES (:v_id, :tag_id)"), {"v_id": v_id, "tag_id": tag_id})
+            
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    return {"status": "success", "video_id": v_id, "manifest_url": manifest_url}
+
+@router.post("/upload/start")
 async def start_upload(req: UploadStart, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     query = text("""
         INSERT INTO videos (creator_id, title, description, type, privacy, status) 
@@ -36,7 +100,7 @@ async def start_upload(req: UploadStart, user_id: str = Depends(get_current_user
     # In a real app we'd generate an S3 presigned URL here
     return {"video_id": str(video["id"]), "upload_url": f"https://files.example.com/upload/{video['id']}"}
 
-@router.post("/api/v1/videos/upload/complete")
+@router.post("/upload/complete")
 async def complete_upload(video_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     query = text("UPDATE videos SET status = 'PROCESSING' WHERE id = :id AND creator_id = :creator_id AND status = 'UPLOADING' RETURNING id")
     result = await db.execute(query, {"id": video_id, "creator_id": user_id})
@@ -50,7 +114,7 @@ async def complete_upload(video_id: str, user_id: str = Depends(get_current_user
     await db.commit()
     return {"status": "success"}
 
-@router.get("/api/v1/videos/upload/{id}/status")
+@router.get("/upload/{id}/status")
 async def get_upload_status(id: str, db: AsyncSession = Depends(get_db)):
     query = text("SELECT status FROM videos WHERE id = :id")
     result = await db.execute(query, {"id": id})
@@ -59,20 +123,20 @@ async def get_upload_status(id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Video not found")
     return {"status": video["status"]}
 
-@router.get("/api/v1/videos")
+@router.get("/")
 async def get_videos(page: int = 1, limit: int = 20, db: AsyncSession = Depends(get_db)):
     offset = (page - 1) * limit
     query = text("SELECT * FROM videos WHERE status = 'READY' AND privacy = 'PUBLIC' ORDER BY created_at DESC LIMIT :limit OFFSET :offset")
     result = await db.execute(query, {"limit": limit, "offset": offset})
     return [dict(r) for r in result.mappings().fetchall()]
 
-@router.get("/api/v1/videos/search")
+@router.get("/search")
 async def search_videos(q: str, db: AsyncSession = Depends(get_db)):
     query = text("SELECT * FROM videos WHERE status = 'READY' AND privacy = 'PUBLIC' AND title ILIKE :q LIMIT 20")
     result = await db.execute(query, {"q": f"%{q}%"})
     return [dict(r) for r in result.mappings().fetchall()]
 
-@router.get("/api/v1/videos/{id}")
+@router.get("/{id}")
 async def get_video(id: str, user_id: Optional[str] = Depends(get_optional_user_id), db: AsyncSession = Depends(get_db)):
     query = text("SELECT * FROM videos WHERE id = :id")
     result = await db.execute(query, {"id": id})
@@ -85,7 +149,7 @@ async def get_video(id: str, user_id: Optional[str] = Depends(get_optional_user_
         
     return dict(video)
 
-@router.delete("/api/v1/videos/{id}")
+@router.delete("/{id}")
 async def delete_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     query = text("DELETE FROM videos WHERE id = :id AND creator_id = :creator_id RETURNING id")
     result = await db.execute(query, {"id": id, "creator_id": user_id})
@@ -94,7 +158,7 @@ async def delete_video(id: str, user_id: str = Depends(get_current_user_id), db:
     await db.commit()
     return {"status": "success"}
 
-@router.patch("/api/v1/videos/{id}/privacy")
+@router.patch("/{id}/privacy")
 async def update_privacy(id: str, req: PrivacyUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     query = text("UPDATE videos SET privacy = :privacy WHERE id = :id AND creator_id = :creator_id RETURNING id")
     result = await db.execute(query, {"id": id, "creator_id": user_id, "privacy": req.privacy})
@@ -103,14 +167,14 @@ async def update_privacy(id: str, req: PrivacyUpdate, user_id: str = Depends(get
     await db.commit()
     return {"status": "success"}
 
-@router.post("/api/v1/videos/{id}/view")
+@router.post("/{id}/view")
 async def record_view(id: str, db: AsyncSession = Depends(get_db)):
     query = text("UPDATE videos SET view_count = view_count + 1 WHERE id = :id")
     await db.execute(query, {"id": id})
     await db.commit()
     return {"status": "success"}
 
-@router.post("/api/v1/videos/{id}/like")
+@router.post("/{id}/like")
 async def like_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     try:
         q1 = text("INSERT INTO likes (user_id, video_id) VALUES (:user_id, :video_id) ON CONFLICT DO NOTHING RETURNING user_id")
@@ -129,7 +193,7 @@ async def like_video(id: str, user_id: str = Depends(get_current_user_id), db: A
         await db.rollback()
     return {"status": "success"}
 
-@router.post("/api/v1/videos/{id}/dislike")
+@router.post("/{id}/dislike")
 async def dislike_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     try:
         q1 = text("INSERT INTO dislikes (user_id, video_id) VALUES (:user_id, :video_id) ON CONFLICT DO NOTHING RETURNING user_id")
@@ -148,7 +212,7 @@ async def dislike_video(id: str, user_id: str = Depends(get_current_user_id), db
         await db.rollback()
     return {"status": "success"}
 
-@router.get("/api/v1/videos/{id}/comments")
+@router.get("/{id}/comments")
 async def get_comments(id: str, db: AsyncSession = Depends(get_db)):
     query = text("""
         SELECT c.*, u.names, u.avatar_url 
@@ -160,7 +224,7 @@ async def get_comments(id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(query, {"id": id})
     return [dict(r) for r in result.mappings().fetchall()]
 
-@router.post("/api/v1/videos/{id}/comments")
+@router.post("/{id}/comments")
 async def create_comment(id: str, req: CommentCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     query = text("INSERT INTO comments (user_id, video_id, content) VALUES (:user_id, :video_id, :content) RETURNING id")
     await db.execute(query, {"user_id": user_id, "video_id": id, "content": req.content})
