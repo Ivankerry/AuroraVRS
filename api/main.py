@@ -102,6 +102,7 @@ async def lifespan(app: FastAPI):
         app.state.faiss_task.cancel()
 
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(lifespan=lifespan)
