@@ -135,7 +135,7 @@ class TwoTowerModel(nn.Module):
 
     @classmethod
     def load(cls, path: str = "/app/storage/models/two_tower.pt") -> 'TwoTowerModel':
-        checkpoint = torch.load(path, map_location="cpu")
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False) # Keep False for now as we save custom dicts
         model = cls.__new__(cls)
         super(TwoTowerModel, model).__init__()
         model.tag_vocab = checkpoint["tag_vocab"]
