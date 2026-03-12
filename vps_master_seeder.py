@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import requests
@@ -68,6 +69,9 @@ def fire_event(video_id: str):
 
 # ── Main Pipeline ─────────────────────────────────────────────────────────────
 def main():
+    # Force unbuffered output for VPS logging
+    sys.stdout.reconfigure(line_buffering=True)
+    
     print(f"\n🚀 AURORA-VRS MASTER SEEDER (FULL 3-FILE PIPELINE)")
     print(f"📂 Storage: {VIDEO_STORAGE_PATH}")
     print(f"📡 API:     {API_BASE_URL}\n")
