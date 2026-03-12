@@ -9,8 +9,10 @@ from typing import List, Optional
 
 # ── Config ────────────────────────────────────────────────────────────────────
 API_BASE_URL = "http://localhost:8000/api/v1"
-# Internal Docker path for existence checks, host path mapped in docker-compose
-VIDEO_STORAGE_PATH = "/app/video_storage" 
+# When running on host, default to local 'videos' folder. 
+# When running in Docker, it will use the env var /app/video_storage
+VIDEO_STORAGE_PATH = os.getenv("VIDEO_STORAGE_PATH", "./videos")
+os.makedirs(VIDEO_STORAGE_PATH, exist_ok=True)
 DOWNLOAD_BASE_URL = "https://recsys.westlake.edu.cn/MicroLens-100k-Dataset/MicroLens-100k_videos/"
 
 CSV_TITLE_FILE = "MicroLens-100k_title_en.csv"
