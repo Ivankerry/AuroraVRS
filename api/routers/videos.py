@@ -133,13 +133,19 @@ async def upload_video(
 
 @router.post("/register")
 async def register_video(req: VideoRegister, user_id: Optional[str] = Depends(get_optional_user_id), db: AsyncSession = Depends(get_db)):
-    # Use provided user_id if present (e.g. from token), else use a default system/kaggle user
-    creator_id = user_id or "00000000-0000-0000-0000-000000000000" # System fallthrough
-    
-    # Check if a user with this ID exists, else just use the first user or a dummy
-    # In this specific app, we'll just allow it for now or use the dummy
+    # Use provided user_id if present (e.g. from token), else use a default system/seeder user
+    creator_id = user_id or "00000000-0000-0000-0000-000000000000"
     
     try:
+        # 1. Ensure the creator user exists (System user for seeding)
+        if not user_id:
+            await db.execute(text("""
+                INSERT INTO users (id, names, email, role) 
+                VALUES (:creator_id, 'System Seeder', 'seeder@aurora.vrs', 'ADMIN') 
+                ON CONFLICT (id) DO NOTHING
+            """), {"creator_id": creator_id})
+
+        # 2. Register Video
         query = text("""
             INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url, view_count, like_count) 
             VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url, :view_count, :like_count)
