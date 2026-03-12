@@ -75,9 +75,14 @@ After upload, the video will appear in the feed.
           "title": "...",
           "manifest_url": "/api/v1/videos/content/<filename>.mp4",
           "creator_id": "...",
-          ...
+          "tags": ["gaming", "action"],
+          "categories": ["Gaming"],
+          "view_count": 10,
+          "like_count": 2
         }
-      ]
+      ],
+      "has_more": false,
+      "next_cursor": null
     }
     ```
 
@@ -87,7 +92,52 @@ To play the video, prefix the `manifest_url` with the server base URL:
 
 ---
 
-## 🛠️ 5. Troubleshooting
-- **405 Method Not Allowed**: Ensure you are using `POST` and the URL is exactly `/api/v1/videos/upload`.
+---
+
+## 📈 6. Event Tracking
+To power the recommendation engine, the app must report user interactions.
+
+- **Endpoint**: `POST /api/v1/events`
+- **Headers**: 
+    - `Authorization: Bearer <token>`
+    - `Content-Type: application/json`
+
+### Request Body:
+```json
+{
+  "video_id": "uuid-here",
+  "event_type": "LIKE",
+  "watch_ratio": 0.85,
+  "metadata": {}
+}
+```
+
+### Supported Event Types:
+| Event Type | Description | Effect |
+| :--- | :--- | :--- |
+| `VIEW` | Normal playback start/continue | Baseline interest |
+| `LIKE` | User liked the video | High positive signal |
+| `SHARE` | User shared the video | Very high positive signal |
+| `SKIP` | User swiped away quickly | Negative signal |
+| `DISLIKE` | User explicitly disliked | High negative signal |
+| `COMMENT` | User commented | Positive signal |
+
+### Flutter (Dio) Example:
+```dart
+void reportEvent(String videoId, String type, {double? ratio}) async {
+  await dio.post("/api/v1/events", data: {
+    "video_id": videoId,
+    "event_type": type,
+    "watch_ratio": ratio ?? 1.0,
+    "metadata": {},
+  });
+}
+```
+
+---
+
+## 🛠️ 7. Troubleshooting
+- **405 Method Not Allowed**: Ensure you are using `POST` and the URL is exactly `/api/v1/events` or `/api/v1/videos/upload`.
+- **422 Unprocessable Entity**: Check that `video_id` is a valid UUID and `event_type` is one of the supported strings.
 - **413 Payload Too Large**: If the video is huge, ensure the server (Nginx/API) allows it. Current limit is generally 100MB+ depending on VPS config.
 - **CORS**: The API allows all origins (`*`), so Flutter Web/Mobile should connect without issues.
