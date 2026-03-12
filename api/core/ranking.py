@@ -93,14 +93,14 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
     try:
         candidates = {}
         
-        # 1. Trending
-        trending_ids = await get_trending_video_ids(region, limit=40)
+        # 1. Trending (Boost popular videos)
+        trending_ids = await get_trending_video_ids(region, limit=100)
         if trending_ids:
             query1 = "SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories FROM videos v LEFT JOIN video_tags vt ON v.id = vt.video_id LEFT JOIN tags t ON t.id = vt.tag_id LEFT JOIN video_categories vc ON v.id = vc.video_id LEFT JOIN categories c ON c.id = vc.category_id WHERE v.id = ANY(:ids) AND v.status = 'READY' AND v.privacy = 'PUBLIC' GROUP BY v.id"
             result1 = await db.execute(text(query1), {"ids": trending_ids})
             for r in result1.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
             
-        # 2. Followed creators
+        # 2. Followed creators (Most recent from follows)
         if user_id:
             query2 = """
             SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
@@ -111,12 +111,12 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
             LEFT JOIN video_categories vc ON v.id = vc.video_id
             LEFT JOIN categories c ON c.id = vc.category_id
             WHERE f.follower_id = :user_id AND v.status = 'READY' AND v.privacy = 'PUBLIC'
-            GROUP BY v.id ORDER BY v.created_at DESC LIMIT 40
+            GROUP BY v.id ORDER BY v.created_at DESC LIMIT 100
             """
             result2 = await db.execute(text(query2), {"user_id": user_id})
             for r in result2.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
             
-        # 3. Tag similarity
+        # 3. Tag similarity (Direct interest matches)
         if interest_vector:
             top_tags = sorted(interest_vector.items(), key=lambda x: x[1], reverse=True)[:10]
             tag_ids = [t[0] for t in top_tags]
@@ -130,12 +130,12 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
                 LEFT JOIN video_categories vc ON v.id = vc.video_id
                 LEFT JOIN categories c ON c.id = vc.category_id
                 WHERE vt2.tag_id = ANY(:tag_ids) AND v.status = 'READY' AND v.privacy = 'PUBLIC'
-                GROUP BY v.id LIMIT 40
+                GROUP BY v.id ORDER BY RANDOM() LIMIT 100
                 """
                 result3 = await db.execute(text(query3), {"tag_ids": tag_ids})
                 for r in result3.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
                 
-        # 4. Regional
+        # 4. Regional (Local community)
         query4 = """
         SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
         FROM videos v 
@@ -146,12 +146,12 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         LEFT JOIN video_categories vc ON v.id = vc.video_id
         LEFT JOIN categories c ON c.id = vc.category_id
         WHERE us.location = :region AND v.status = 'READY' AND v.privacy = 'PUBLIC'
-        GROUP BY v.id LIMIT 20
+        GROUP BY v.id ORDER BY RANDOM() LIMIT 50
         """
         result4 = await db.execute(text(query4), {"region": region})
         for r in result4.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
         
-        # 5. Cold start pool
+        # 5. Discovery / Cold start pool (Videos with low views or recently created)
         query5 = """
         SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
         FROM videos v 
@@ -159,9 +159,11 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         LEFT JOIN tags t ON t.id = vt.tag_id
         LEFT JOIN video_categories vc ON v.id = vc.video_id
         LEFT JOIN categories c ON c.id = vc.category_id
-        WHERE v.view_count < 1000 AND v.created_at > NOW() - INTERVAL '24 hours' 
+        WHERE (v.view_count < 100 OR v.created_at > NOW() - INTERVAL '72 hours')
         AND v.status = 'READY' AND v.privacy = 'PUBLIC'
-        GROUP BY v.id LIMIT 20
+        GROUP BY v.id 
+        ORDER BY RANDOM() 
+        LIMIT 100
         """
         result5 = await db.execute(text(query5))
         for r in result5.mappings().fetchall(): candidates[str(r['id'])] = dict(r)

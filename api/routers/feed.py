@@ -28,8 +28,8 @@ async def _cold_start_feed(
     WHERE v.status = 'READY' AND v.privacy = 'PUBLIC'
       AND v.type = :video_type
     GROUP BY v.id
-    ORDER BY v.created_at DESC
-    LIMIT 20
+    ORDER BY RANDOM()
+    LIMIT 100
     """
     result = await db.execute(text(query), {"video_type": video_type})
     rows = [dict(r) for r in result.mappings().fetchall()]
