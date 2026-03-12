@@ -92,6 +92,12 @@ To play the video, prefix the `manifest_url` with the server base URL:
 
 ---
 
+## 🔄 5. Infinite Scroll & Pagination
+To ensure a smooth user experience, the app should fetch videos in batches of 20 and automatically load more as the user scrolls.
+
+Detailed implementation logic using `ScrollController`, `isFetching` states, and `has_more` handling can be found in the:
+👉 **[Flutter Infinite Scroll & Pagination Guide](file:///c:/Users/dev/Desktop/AuroraVRS/flutter_pagination_guide.md)**
+
 ---
 
 ## 📈 6. Event Tracking

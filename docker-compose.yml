@@ -11,7 +11,7 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - video_storage:/app/storage/videos
+      - ./videos:/app/storage/videos
 
   redis:
     image: redis:7-alpine
@@ -31,7 +31,7 @@ services:
     volumes:
       - ./api:/app
       - model_storage:/app/storage/models
-      - video_storage:/app/storage/videos
+      - ./videos:/app/storage/videos
     depends_on:
       - db
       - redis
@@ -54,7 +54,7 @@ services:
       - ./amazon_enricher.py:/app/amazon_enricher.py
       - ./interaction_simulator.py:/app/interaction_simulator.py
       - model_storage:/app/storage/models
-      - video_storage:/app/storage/videos
+      - ./videos:/app/storage/videos
     depends_on:
       - db
       - redis
@@ -62,4 +62,3 @@ services:
 volumes:
   pgdata:
   model_storage:
-  video_storage:
