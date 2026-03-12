@@ -80,7 +80,7 @@ def main():
         df_tags = pd.read_csv(CSV_TAG_FILE, names=['item_id', 'category'], dtype={'item_id': str})
         
         # File 3: Engagement (item_id, likes, views) - Whitespace separated
-        df_eng = pd.read_csv(TXT_ENGAGEMENT_FILE, sep='\s+', names=['item_id', 'likes', 'views'], dtype={'item_id': str})
+        df_eng = pd.read_csv(TXT_ENGAGEMENT_FILE, sep=r'\s+', names=['item_id', 'likes', 'views'], dtype={'item_id': str})
         
         # Merging Logic: Title + Tags first, then add Engagement
         df_merged = pd.merge(df_title, df_tags, on='item_id')
