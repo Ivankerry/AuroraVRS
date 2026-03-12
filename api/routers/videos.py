@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile, Form
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional, List
@@ -11,12 +12,25 @@ from core.db import get_db
 from core.auth import get_current_user_id, get_optional_user_id
 
 router = APIRouter(prefix="/api/v1/videos", tags=["videos"])
+logger = logging.getLogger(__name__)
 
 class UploadStart(BaseModel):
     title: str
     description: Optional[str] = None
     type: str
     privacy: str = "PUBLIC"
+
+class VideoRegister(BaseModel):
+    id: str  # Pre-defined UUID or item_id
+    title: str
+    description: Optional[str] = "Imported"
+    type: str = "QUICK"
+    privacy: str = "PUBLIC"
+    manifest_url: str
+    categories: List[str] = []
+    tags: List[str] = []
+    view_count: int = 0
+    like_count: int = 0
 
 class CommentCreate(BaseModel):
     content: str
@@ -116,6 +130,67 @@ async def upload_video(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     return {"status": "success", "video_id": v_id, "manifest_url": manifest_url}
+
+@router.post("/register")
+async def register_video(req: VideoRegister, user_id: Optional[str] = Depends(get_optional_user_id), db: AsyncSession = Depends(get_db)):
+    # Use provided user_id if present (e.g. from token), else use a default system/kaggle user
+    creator_id = user_id or "00000000-0000-0000-0000-000000000000" # System fallthrough
+    
+    # Check if a user with this ID exists, else just use the first user or a dummy
+    # In this specific app, we'll just allow it for now or use the dummy
+    
+    try:
+        query = text("""
+            INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url, view_count, like_count) 
+            VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url, :view_count, :like_count)
+            ON CONFLICT (id) DO UPDATE SET 
+                title = EXCLUDED.title, 
+                view_count = EXCLUDED.view_count,
+                like_count = EXCLUDED.like_count,
+                updated_at = NOW()
+            RETURNING id
+        """)
+        await db.execute(query, {
+            "v_id": req.id,
+            "creator_id": creator_id, 
+            "title": req.title, 
+            "description": req.description,
+            "type": req.type, 
+            "privacy": req.privacy,
+            "manifest_url": req.manifest_url,
+            "view_count": req.view_count,
+            "like_count": req.like_count
+        })
+        
+        # Categories mapping (MicroLens names or IDs)
+        for cat_name in req.categories:
+            # Find or Create category
+            cat_res = await db.execute(text("INSERT INTO categories (name) VALUES (:name) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id"), {"name": cat_name})
+            cat_id = cat_res.scalar()
+            if cat_id:
+                await db.execute(text("INSERT INTO video_categories (video_id, category_id) VALUES (:v_id, :cat_id) ON CONFLICT DO NOTHING"), {"v_id": req.id, "cat_id": cat_id})
+        
+        # Tags mapping
+        for tag_name in req.tags:
+            tag_res = await db.execute(text("INSERT INTO tags (name) VALUES (:name) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id"), {"name": tag_name})
+            tag_id = tag_res.scalar()
+            if tag_id:
+                await db.execute(text("INSERT INTO video_tags (video_id, tag_id) VALUES (:v_id, :tag_id) ON CONFLICT DO NOTHING"), {"v_id": req.id, "tag_id": tag_id})
+        
+        await db.commit()
+        
+        # 5. Trending Boost (Background)
+        from core.ranking import update_trending_score
+        import math
+        # Initial velocity based on historical popularity (log-scaled)
+        velocity = math.log1p(req.like_count * 2 + (req.view_count / 10))
+        await update_trending_score(req.id, velocity)
+        
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    return {"status": "success", "video_id": req.id}
 
 @router.post("/upload/start")
 async def start_upload(req: UploadStart, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):

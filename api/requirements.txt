@@ -10,3 +10,6 @@ bcrypt==4.0.1
 packaging==23.2
 sentence-transformers
 python-multipart==0.0.6
+pandas
+tqdm
+requests
