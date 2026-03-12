@@ -4,23 +4,28 @@ Use this guide to migrate your video files from the Docker Named Volume to a Hos
 
 ## 🛠️ Step-by-Step Migration
 
-### 1. Create the Host Directory
-Run this on your VPS to create the target folder:
+### 1. Create Host Directories
+Run this on your VPS to create the target folders:
 ```bash
 mkdir -p ~/AuroraVRS/videos
+mkdir -p ~/AuroraVRS/models
 ```
 
 ### 2. Migrate Existing Data
-Run this one-liner to rescue your existing `.mp4` files from the old volume into the new folder:
+Run these commands to rescue your existing files from the old volumes:
 ```bash
+# Migrate Videos
 docker run --rm -v auroravrs_video_storage:/from -v ~/AuroraVRS/videos:/to alpine ash -c "cp -av /from/. /to/"
+
+# Migrate Models
+docker run --rm -v auroravrs_model_storage:/from -v ~/AuroraVRS/models:/to alpine ash -c "cp -av /from/. /to/"
 ```
 
 ### 3. Set Permissions
-Ensure the Docker containers have permission to read/write to this folder:
+Ensure the Docker containers have permission to read/write to these folders:
 ```bash
-sudo chown -R $USER:$USER ~/AuroraVRS/videos
-chmod -R 755 ~/AuroraVRS/videos
+sudo chown -R $USER:$USER ~/AuroraVRS/videos ~/AuroraVRS/models
+chmod -R 755 ~/AuroraVRS/videos ~/AuroraVRS/models
 ```
 
 ### 4. Restart with New Configuration

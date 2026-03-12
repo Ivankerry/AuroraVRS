@@ -118,9 +118,10 @@ async def validation_exception_handler(request, exc):
     )
 
 # Create storage directory if not exists
-os.makedirs("/app/storage/videos", exist_ok=True)
+VIDEO_STORAGE_PATH = os.getenv("VIDEO_STORAGE_PATH", "/app/storage/videos")
+os.makedirs(VIDEO_STORAGE_PATH, exist_ok=True)
 
-app.mount("/api/v1/videos/content", StaticFiles(directory="/app/storage/videos"), name="video-content")
+app.mount("/api/v1/videos/content", StaticFiles(directory=VIDEO_STORAGE_PATH), name="video-content")
 
 app.add_middleware(
     CORSMiddleware,

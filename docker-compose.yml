@@ -26,11 +26,13 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/db
       REDIS_URL: redis://redis:6379/0
+      VIDEO_STORAGE_PATH: /app/storage/videos
+      MODEL_STORAGE_PATH: /app/storage/models
     env_file:
       - .env
     volumes:
       - ./api:/app
-      - model_storage:/app/storage/models
+      - ./models:/app/storage/models
       - ./videos:/app/storage/videos
     depends_on:
       - db
@@ -42,6 +44,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/db
       REDIS_URL: redis://redis:6379/0
+      VIDEO_STORAGE_PATH: /app/storage/videos
+      MODEL_STORAGE_PATH: /app/storage/models
     env_file:
       - .env
     volumes:
@@ -53,7 +57,7 @@ services:
       - ./ndcg_test.py:/app/ndcg_test.py
       - ./amazon_enricher.py:/app/amazon_enricher.py
       - ./interaction_simulator.py:/app/interaction_simulator.py
-      - model_storage:/app/storage/models
+      - ./models:/app/storage/models
       - ./videos:/app/storage/videos
     depends_on:
       - db
@@ -61,4 +65,3 @@ services:
 
 volumes:
   pgdata:
-  model_storage:

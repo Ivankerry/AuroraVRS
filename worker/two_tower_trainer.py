@@ -25,8 +25,9 @@ EPOCHS = 20
 LR = 0.001
 VAL_SPLIT = 0.2
 PATIENCE = 3
-MODEL_PATH = os.getenv("MODEL_PATH", "/app/storage/models/two_tower.pt")
-CANDIDATE_PATH = os.getenv("CANDIDATE_PATH", "/app/storage/models/two_tower_candidate.pt")
+MODEL_STORAGE_PATH = os.getenv("MODEL_STORAGE_PATH", "/app/storage/models")
+MODEL_PATH = os.path.join(MODEL_STORAGE_PATH, "two_tower.pt")
+CANDIDATE_PATH = os.path.join(MODEL_STORAGE_PATH, "two_tower_candidate.pt")
 
 async def get_db_pool():
     url = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost/db")

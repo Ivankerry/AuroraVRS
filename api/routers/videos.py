@@ -54,7 +54,7 @@ async def upload_video(
     v_id = str(uuid.uuid4())
     file_ext = os.path.splitext(file.filename)[1]
     filename = f"{v_id}{file_ext}"
-    storage_path = "/app/storage/videos"
+    storage_path = os.getenv("VIDEO_STORAGE_PATH", "/app/storage/videos")
     file_path = os.path.join(storage_path, filename)
     
     try:
