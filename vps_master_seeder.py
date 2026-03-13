@@ -20,7 +20,7 @@ CSV_TITLE_FILE = "MicroLens-100k_title_en.csv"
 CSV_TAG_FILE = "tags_to_summary.csv"
 TXT_ENGAGEMENT_FILE = "MicroLens-100k_likes_and_views.txt"
 
-VIDEO_LIMIT = 8000
+VIDEO_LIMIT = 2000
 EVENT_LIMIT = 50000
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
