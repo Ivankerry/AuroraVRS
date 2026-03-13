@@ -17,9 +17,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/
 if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
-# Admin Credentials (Default System Seeder user)
-ADMIN_EMAIL = "seeder@aurora.vrs"
-ADMIN_PASS  = "admin123" 
+# Admin Credentials (Provided by user)
+ADMIN_EMAIL = "testone@gmail.com"
+ADMIN_PASS  = "test123" 
 
 USER_PROFILES = [
     {"name": "Tech Enthusiast",   "cats": ["Tech"]},
