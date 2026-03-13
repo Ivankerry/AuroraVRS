@@ -117,7 +117,7 @@ async def main():
     
     cat_pools = {}
     for cat in db_cats:
-        ids = [str(r['id']) for r in await conn.fetch("""
+        ids = [str(r['video_id']) for r in await conn.fetch("""
             SELECT vc.video_id FROM video_categories vc
             JOIN videos v ON v.id = vc.video_id
             JOIN categories c ON c.id = vc.category_id
