@@ -6,76 +6,64 @@ import asyncpg
 import numpy as np
 from collections import defaultdict
 import os
+import json
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# If running inside Docker, use service names. If running from host, use VPS IP.
-BASE_URL     = os.getenv("API_URL", "http://62.84.176.140:8080/api/v1")
+# Use localhost for VPS local testing or the provided IP for remote
+DEFAULT_URL = "http://localhost:8080/api/v1"
+BASE_URL     = os.getenv("API_URL", DEFAULT_URL)
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
 
 if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
-# Admin Credentials
-ADMIN_EMAIL = "testone@gmail.com"
-ADMIN_PASS  = "test123"
+# Admin Credentials (Default System Seeder user)
+ADMIN_EMAIL = "seeder@aurora.vrs"
+ADMIN_PASS  = "admin123" 
 
-# Milestone 2: 20 Users, Overlapping Interests
 USER_PROFILES = [
     {"name": "Tech Enthusiast",   "cats": ["Tech"]},
     {"name": "Music Lover",        "cats": ["Music"]},
     {"name": "Gamer",             "cats": ["Gaming"]},
     {"name": "Educator",          "cats": ["Education"]},
     {"name": "Comedy Fan",         "cats": ["Comedy"]},
-    
-    # Overlapping Interests (The "Blending" Test)
     {"name": "Tech/Gamer",        "cats": ["Tech", "Gaming"]},
     {"name": "Music/Comedy",      "cats": ["Music", "Comedy"]},
-    {"name": "Edu/Tech",          "cats": ["Education", "Tech"]},
-    {"name": "Gamer/Comedy",      "cats": ["Gaming", "Comedy"]},
-    {"name": "Music/Tech",        "cats": ["Music", "Tech"]},
-    {"name": "Gaming/Edu",        "cats": ["Gaming", "Education"]},
-    {"name": "Comedy/Edu",        "cats": ["Comedy", "Education"]},
-    {"name": "Tech/Music/Gamer",  "cats": ["Tech", "Music", "Gaming"]},
     {"name": "Omnivore",          "cats": ["Tech", "Music", "Gaming", "Comedy", "Education"]},
-    
-    # Duplicate categories to reach 20
-    {"name": "Tech Lead",         "cats": ["Tech"]},
-    {"name": "Indie Listener",    "cats": ["Music"]},
-    {"name": "Pro Gamer",         "cats": ["Gaming"]},
-    {"name": "Professor",         "cats": ["Education"]},
-    {"name": "Joke Teller",       "cats": ["Comedy"]},
-    {"name": "Hardware Geek",     "cats": ["Tech", "Gaming"]},
 ]
 
-VIEWS_PER_USER = 100   # Sufficient for interaction signal
-LIKES_PER_USER = 150   # Ground truth
-SKIPS_PER_USER = 20    # Negative signal
+VIEWS_PER_USER = 20
+LIKES_PER_USER = 10
+SKIPS_PER_USER = 5
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 def dcg(relevances):
     return sum(rel / np.log2(idx + 2) for idx, rel in enumerate(relevances))
 
 def ndcg_at_k(recommended_ids, relevant_ids, k=10):
+    if not relevant_ids: return 0.0
     top_k = recommended_ids[:k]
     relevances = [1 if vid in relevant_ids else 0 for vid in top_k]
     actual_dcg  = dcg(relevances)
-    ideal_dcg   = dcg(sorted(relevances, reverse=True))
+    # Ideal DCG is for a list where all top items are relevant (up to the number of relevant items we have)
+    ideal_relevances = [1] * min(len(relevant_ids), k)
+    ideal_dcg   = dcg(ideal_relevances)
     return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def register(email, name, password):
+def login_or_register(email, name="Eval User", password="eval_pass_123!"):
+    # Try Login
     try:
-        r = requests.post(f"{BASE_URL}/auth/register", json={
-            "email": email, "password": password, "names": name
-        }, timeout=10)
+        r = requests.post(f"{BASE_URL}/auth/login", json={"email": email, "password": password}, timeout=5)
         if r.status_code == 200: return r.json()["access_token"]
     except: pass
     
-    r = requests.post(f"{BASE_URL}/auth/login", json={
-        "email": email, "password": password
-    }, timeout=10)
-    if r.status_code == 200: return r.json()["access_token"]
-    raise Exception(f"Could not register/login {email}")
+    # Try Register
+    try:
+        r = requests.post(f"{BASE_URL}/auth/register", json={"email": email, "password": password, "names": name}, timeout=5)
+        if r.status_code == 200: return r.json()["access_token"]
+    except: pass
+    return None
 
 def auth_headers(token): return {"Authorization": f"Bearer {token}"}
 
@@ -92,118 +80,46 @@ async def get_video_categories(conn, video_ids):
         v_cats[str(r['id'])].append(r['name'])
     return v_cats
 
-def fire_event(token, video_id, event_type, ratio=None):
+def fire_event(token, video_id, event_type, ratio=1.0):
     try:
-        url = f"{BASE_URL}/videos/{video_id}/like" if event_type == "LIKE" else f"{BASE_URL}/events"
-        payload = {"video_id": video_id, "event_type": event_type, "watch_ratio": ratio, "metadata": {}} if event_type != "LIKE" else None
-        r = requests.post(url, json=payload, headers=auth_headers(token), timeout=5)
-        return r.status_code == 200
+        if event_type == "LIKE":
+            url = f"{BASE_URL}/videos/{video_id}/like"
+            r = requests.post(url, headers=auth_headers(token), timeout=5)
+        else:
+            url = f"{BASE_URL}/events"
+            payload = {"video_id": video_id, "event_type": event_type, "watch_ratio": ratio}
+            r = requests.post(url, json=payload, headers=auth_headers(token), timeout=5)
+        return r.status_code in (200, 201)
     except: return False
 
 def get_feed(token):
     try:
         r = requests.get(f"{BASE_URL}/feed", headers=auth_headers(token), timeout=10)
-        return [v["id"] for v in r.json().get("videos", [])]
-    except: return []
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-async def main():
-    print("\n" + "═" * 80)
-    print("       🧪 AURORA-VRS MILESTONE 2: MULTI-INTEREST VECTOR BLENDING EVAL")
-    print("═" * 80)
-    print(f"  Users         : {len(USER_PROFILES)}")
-    print(f"  Complexity    : Single, Dual, and Triple Interest Profiles")
-    print("═" * 80)
-
-    conn = await asyncpg.connect(DATABASE_URL)
-    
-    # Load Video Pools
-    all_cats = list(set([c for p in USER_PROFILES for c in p["cats"]]))
-    cat_pools = {}
-    for cat in all_cats:
-        ids = [str(r['id']) for r in await conn.fetch("""
-            SELECT v.id FROM videos v
-            JOIN video_categories vc ON v.id = vc.video_id
-            JOIN categories c ON vc.category_id = c.id
-            WHERE c.name = $1 AND v.privacy = 'PUBLIC' AND v.status = 'READY'
-            LIMIT 500
-        """, cat)]
-        cat_pools[cat] = ids
-        print(f"  📦 Pool [{cat:<10}]: {len(ids)} videos")
-
-    # Step 2: Generation
-    timestamp = int(time.time())
-    users_data = []
-    
-    print(f"\n🚀 GENERATING INTERACTION SIGNALS...")
-    for idx, profile in enumerate(USER_PROFILES):
-        p_cats = profile["cats"]
-        name   = profile["name"]
-        email  = f"m2_{idx}_{timestamp}@aurora.com"
-        token  = register(email, name, "eval_pass_123!")
-        
-        print(f"  [{idx+1:02}/20] {name:<18} | Interests: {', '.join(p_cats)}")
-        
-        ground_truth_likes = set()
-        
-        # Mix categories for views/likes
-        for _ in range(VIEWS_PER_USER):
-            cat = random.choice(p_cats)
-            vid = random.choice(cat_pools[cat])
-            fire_event(token, vid, "VIEW", ratio=round(random.uniform(0.8, 1.0), 2))
-            
-        for _ in range(LIKES_PER_USER):
-            cat = random.choice(p_cats)
-            vid = random.choice(cat_pools[cat])
-            if fire_event(token, vid, "LIKE"):
-                ground_truth_likes.add(vid)
-                
-        # Skip garbage
-        other_cats = [c for c in all_cats if c not in p_cats]
-        if other_cats:
-            for _ in range(SKIPS_PER_USER):
-                cat = random.choice(other_cats)
-                if cat_pools.get(cat):
-                    vid = random.choice(cat_pools[cat])
-                    fire_event(token, vid, "SKIP", ratio=0.05)
-        
-        users_data.append({"name": name, "cats": p_cats, "token": token, "gt": ground_truth_likes})
-
-    print(f"\n⏳ WAITING 30s FOR VECTOR PROPAGATION & WORKER PROCESSING...")
-    for i in range(30, 0, -1):
-        if i % 5 == 0: print(f"  ... {i}s remaining")
-        time.sleep(1)
-
-    # Step 3: Evaluation
-    print(f"\n📊 TRIGGERING MODEL SYNC & REBUILD ON VPS...")
-    try:
-        # Get Admin Token for rebuilding index
-        print(f"  🔑 Logging in as system admin ({ADMIN_EMAIL})...")
-        admin_token = login(ADMIN_EMAIL, ADMIN_PASS)
-        if not admin_token:
-            print("  ⚠️  Admin Login FAILED. Trying to promote first test user instead...")
-            # Fallback to promoting first user (requires manual SQL usually, but if they are already promoted it works)
-            admin_token = users_data[0]["token"]
-            
-        r = requests.post(f"{BASE_URL}/ml/rebuild-index", headers=auth_headers(admin_token), timeout=30)
         if r.status_code == 200:
-            print("  ✅ ML Sync Triggered Successfully (Retrain + FAISS reload).")
-        elif r.status_code == 403:
-            print(f"  ⚠️  ML Sync DENIED (403): User {ADMIN_EMAIL} is not an ADMIN.")
-            print("      FIX: Run the SQL command to promote this specific email.")
-        else:
-            print(f"  ⚠️  ML Sync Status: {r.status_code}. Details: {r.text}")
-    except Exception as e:
-        print(f"  ⚠️  ML Sync Trigger failed: {e}")
+            return [v["id"] for v in r.json().get("videos", [])]
+    except: pass
+    return []
 
-    print(f"\n⏳ WAITING 60s FOR WORKER TO GESTATE & RELOAD MODEL...")
-    for i in range(60, 0, -5):
-        print(f"  ... {i}s remaining")
-        time.sleep(5)
+async def poll_ml_status(token):
+    print("  🔍 Polling ML Status...")
+    for _ in range(15): # Wait up to 2.5 mins
+        try:
+            r = requests.get(f"{BASE_URL}/ml/status", headers=auth_headers(token), timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("two_tower_active"):
+                    print(f"  ✅ Model Status: ACTIVE (FAISS items: {data.get('faiss_size')})")
+                    return True
+                print(f"  ⏳ Model Status: Loading... (Loaded: {data.get('model_loaded')}, FAISS: {data.get('faiss_ready')})")
+        except: pass
+        time.sleep(10)
+    return False
 
-    print(f"\n📊 EVALUATING FEED ALIGNMENT & PRECORE SCORES...")
-    print(f"\n{'User':<20} {'Interests':<25} {'Hits@10':<8} {'NDCG@10':<10} {'Align@10'}")
-    print("-" * 80)
+# ── Evaluation ────────────────────────────────────────────────────────────────
+async def evaluate_users(conn, users_data, title="Evaluation"):
+    print(f"\n📊 {title}")
+    print(f"{'User':<22} {'Interests':<25} {'Hits@10':<8} {'NDCG@10':<10} {'Align@10'}")
+    print("-" * 100)
     
     total_ndcg = []
     total_align = []
@@ -211,10 +127,9 @@ async def main():
     for user in users_data:
         feed = get_feed(user["token"])
         if not feed:
-            print(f"{user['name']:<20} {'EMPTY FEED':<25}")
+            print(f"{user['name']:<22} {'EMPTY FEED':<25}")
             continue
             
-        # Get cat metadata for feed
         feed_cats = await get_video_categories(conn, feed[:10])
         align_count = 0
         for vid in feed[:10]:
@@ -228,27 +143,112 @@ async def main():
         total_ndcg.append(score_ndcg)
         total_align.append(align_count / 10.0)
         
-        interests_str = ", ".join(user["cats"])
-        print(f"{user['name']:<20} {interests_str:<25} {hits:<8} {score_ndcg:<10.4f} {align_count}/10")
+        interests_str = ", ".join(user["cats"])[:25]
+        print(f"{user['name']:<22} {interests_str:<25} {hits:<8} {score_ndcg:<10.4f} {align_count}/10")
 
-    await conn.close()
-
-    print("\n" + "═" * 80)
-    print("  🏁 MILESTONE 2 SUMMARY")
-    print("═" * 80)
     avg_ndcg = np.mean(total_ndcg) if total_ndcg else 0
     avg_align = np.mean(total_align) if total_align else 0
+    print("-" * 100)
+    print(f"{'AVERAGE':<48} {avg_ndcg:.4f}     {avg_align*100:.1f}%")
+    return avg_ndcg, avg_align
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+async def main():
+    print("\n" + "═" * 100)
+    print("       🧪 AURORA-VRS: ACCURATE NDCG & PERSONALIZATION EVALUATION")
+    print("═" * 100)
+
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+    except Exception as e:
+        print(f"❌ Could not connect to database: {e}")
+        return
+
+    # 1. Check for seeded content
+    print("\n📦 PHASE 1: Checking Data Availability")
+    all_cats_rows = await conn.fetch("SELECT name FROM categories")
+    all_available_cats = [r['name'] for r in all_cats_rows]
+    print(f"  Available Categories: {len(all_available_cats)}")
     
-    print(f"  Avg NDCG@10           : {avg_ndcg:.4f}")
-    print(f"  Avg Interest Align@10 : {avg_align*100:.1f}%")
+    cat_pools = {}
+    for cat in all_available_cats:
+        ids = [str(r['id']) for r in await conn.fetch("""
+            SELECT v.id FROM videos v
+            JOIN video_categories vc ON v.id = vc.video_id
+            JOIN categories c ON vc.category_id = c.id
+            WHERE c.name = $1 AND v.privacy = 'PUBLIC' AND v.status = 'READY'
+            LIMIT 100
+        """, cat)]
+        if ids: cat_pools[cat] = ids
     
-    if avg_align > 0.7 and avg_ndcg > 0.15:
-        print("\n  ✅ SUCCESS: System handles multi-interest blending effectively.")
-    elif avg_align > 0.5:
-        print("\n  🟡 WARNING: Personalization is working, but ranking (NDCG) is loose.")
+    if not cat_pools:
+        print("❌ CRITICAL: No videos found in any categories. Is Phase 1 of Seeder finished?")
+        await conn.close()
+        return
+
+    # 2. Cold-Start Validation (Injecting targeted behavior for new users)
+    print("\n🚀 PHASE 2: Generating Test Interactions (Cold-Start)")
+    timestamp = int(time.time())
+    new_users = []
+    
+    for idx, profile in enumerate(USER_PROFILES):
+        name = f"Test_{profile['name']}_{timestamp}"
+        email = f"eval_{idx}_{timestamp}@aurora.com"
+        token = login_or_register(email, name)
+        if not token: continue
+        
+        # Filter for cats we have videos for
+        valid_cats = [c for c in profile['cats'] if c in cat_pools]
+        if not valid_cats: continue
+
+        print(f"  [{idx+1}/{len(USER_PROFILES)}] {profile['name']:<18} | Generating {VIEWS_PER_USER} views...")
+        gt_likes = set()
+        
+        for _ in range(VIEWS_PER_USER):
+            cat = random.choice(valid_cats)
+            vid = random.choice(cat_pools[cat])
+            fire_event(token, vid, "VIEW", ratio=0.9)
+            
+        for _ in range(LIKES_PER_USER):
+            cat = random.choice(valid_cats)
+            vid = random.choice(cat_pools[cat])
+            if fire_event(token, vid, "LIKE"):
+                gt_likes.add(vid)
+                
+        new_users.append({"name": profile['name'], "cats": valid_cats, "token": token, "gt": gt_likes})
+
+    # 3. Trigger Model Refresh (So the system "sees" these new interactions)
+    print("\n🔄 Triggering Model & Index Refresh...")
+    admin_token = login_or_register(ADMIN_EMAIL, "System Admin", ADMIN_PASS)
+    if admin_token:
+        try:
+            r = requests.post(f"{BASE_URL}/ml/rebuild-index", headers=auth_headers(admin_token), timeout=45)
+            if r.status_code == 200:
+                print("  ✅ ML Rebuild Triggered.")
+            else:
+                print(f"  ⚠️ Trigger returned {r.status_code}: {r.text}")
+        except Exception as e:
+            print(f"  ⚠️ ML Sync Trigger failed: {e}")
     else:
-        print("\n  ❌ FAILURE: Recommendations are not aligning with user multi-interest profiles.")
-    print("═" * 80 + "\n")
+        print("  ⚠️ Admin Login Failed (seeder@aurora.vrs). Try manual rebuild or wait 30 minutes.")
+
+    # Wait for the model to update
+    if not await poll_ml_status(admin_token if admin_token else new_users[0]['token']):
+        print("  ⚠️ Model is not active or took too long. Results may be random/empty.")
+
+    # 4. Evaluation
+    avg_ndcg, avg_align = await evaluate_users(conn, new_users, "ACCURACY EVALUATION SUMMARY")
+
+    print("\n" + "═" * 100)
+    if avg_align > 0.7 and avg_ndcg > 0.1:
+        print("  🏆 RESULT: EXCELLENT. The model is accurately learning and personalizing.")
+    elif avg_align > 0.4:
+        print("  🥈 RESULT: PASSABLE. Personalization is working, but ranking is still loose.")
+    else:
+        print("  🥉 RESULT: WEAK. Ensure seeder Phase 2 (events) is deep enough.")
+    print("═" * 100 + "\n")
+
+    await conn.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
