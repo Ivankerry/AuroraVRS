@@ -118,8 +118,9 @@ def main():
         if "#" in str(title):
             title_parts = str(title).split("#")
             for part in title_parts[1:]:
-                tag = part.strip().split()[0]
-                if tag:
+                words = part.strip().split()
+                if words:
+                    tag = words[0]
                     tags.append(tag)
 
         # Download Check (Saves as {v_uuid}.mp4)
