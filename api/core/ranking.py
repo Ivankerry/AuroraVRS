@@ -134,6 +134,16 @@ async def get_viral_multiplier(video_id: str) -> float:
     except Exception:
         return 1.0
 
+async def get_video_tier(video_id: str) -> str | None:
+    try:
+        from core.db import get_redis
+        redis = await get_redis()
+        tier = await redis.get(f"viral_tier:{video_id}")
+        if not tier: return None
+        return tier.decode('utf-8') if isinstance(tier, bytes) else tier
+    except Exception:
+        return None
+
 async def get_trending_video_ids(region="global", limit=50) -> list[str]:
     try:
         from core.db import get_redis

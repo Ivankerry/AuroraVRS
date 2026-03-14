@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Depends, Query
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.db import get_db, get_redis
-from core.ranking import score_video, get_candidates, get_interest_vector, MIN_EVENTS_FOR_MODEL
+from core.ranking import score_video, get_candidates, get_interest_vector, MIN_EVENTS_FOR_MODEL, get_video_tier
 import numpy as np
 import json
 import logging
@@ -218,6 +218,9 @@ async def get_feed(
         next_cursor = base64.b64encode(last_vid_id.encode('utf-8')).decode('utf-8')
         
     for v in final_feed:
+        # Viral Tier Enrichment
+        v['viral_tier'] = await get_video_tier(str(v['id']))
+        
         tags = v.get('tags', [])
         tags = [t for t in tags if t]
         v['tags'] = list(dict.fromkeys(tags))

@@ -261,7 +261,10 @@ async def get_video(id: str, user_id: Optional[str] = Depends(get_optional_user_
     if video["privacy"] == "PRIVATE" and str(video["creator_id"]) != user_id:
         raise HTTPException(status_code=403, detail="Private video")
         
-    return dict(video)
+    video_dict = dict(video)
+    from core.ranking import get_video_tier
+    video_dict["viral_tier"] = await get_video_tier(id)
+    return video_dict
 
 @router.delete("/{id}")
 async def delete_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
