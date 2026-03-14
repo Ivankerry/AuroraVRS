@@ -1,8 +1,7 @@
-version: '3.8'
-
 services:
   db:
     image: ankane/pgvector:v0.5.1
+    shm_size: 256mb
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
