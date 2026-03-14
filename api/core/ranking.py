@@ -72,11 +72,67 @@ async def update_trending_score(video_id, engagement_velocity, region="global"):
         from core.db import get_redis
         redis = await get_redis()
         key = f"trending:{region}"
-        await redis.zadd(key, {str(video_id): float(engagement_velocity)})
+        
+        # 1. Update existing trending pool
+        vid_str = str(video_id)
+        velocity = float(engagement_velocity)
+        await redis.zadd(key, {vid_str: velocity})
         await redis.zremrangebyrank(key, 0, -1001)
         await redis.expire(key, 86400)
+
+        # 2. Z-Score Viral Detection
+        all_items = await redis.zrange(key, 0, -1, withscores=True)
+        if len(all_items) < 10:
+            return  # Not enough data for statistical significance
+
+        scores = [float(s) for _, s in all_items]
+        mean = np.mean(scores)
+        std = np.std(scores) or 0.0001 # Prevent div by zero
+
+        z = (velocity - mean) / std
+        tier = None
+        
+        if z > 15:   tier = "MEGA_VIRAL"
+        elif z > 10: tier = "VIRAL"
+        elif z > 5:  tier = "HOT"
+        elif z > 2:  tier = "WATCH"
+
+        if tier:
+            # Store tier for rapid multiplier lookup
+            tier_key = f"viral_tier:{vid_str}"
+            await redis.setex(tier_key, 300, tier)
+            
+            # MEGA_VIRAL: Trigger Global Cache Invalidation
+            if tier == "MEGA_VIRAL":
+                logger.info(f"🔥 MEGA_VIRAL DETECTED: {vid_str} (z={z:.2f}). Invalidating feed cache.")
+                # Clear all feed cache keys
+                keys = await redis.keys("feed:*")
+                if keys:
+                    await redis.delete(*keys)
     except Exception as e:
         logger.error(f"Error updating trending score: {e}")
+
+async def get_viral_multiplier(video_id: str) -> float:
+    try:
+        from core.db import get_redis
+        redis = await get_redis()
+        tier = await redis.get(f"viral_tier:{video_id}")
+        if not tier: return 1.0
+        
+        multipliers = {
+            b"WATCH": 1.5,
+            b"HOT": 2.0,
+            b"VIRAL": 3.0,
+            b"MEGA_VIRAL": 5.0,
+            # Handle cases where redis might return strings based on client config
+            "WATCH": 1.5,
+            "HOT": 2.0,
+            "VIRAL": 3.0,
+            "MEGA_VIRAL": 5.0
+        }
+        return multipliers.get(tier, 1.0)
+    except Exception:
+        return 1.0
 
 async def get_trending_video_ids(region="global", limit=50) -> list[str]:
     try:
@@ -90,6 +146,7 @@ async def get_trending_video_ids(region="global", limit=50) -> list[str]:
         return []
 
 async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=100) -> list[dict]:
+    # ... (existing get_candidates implementation remains same, just ensuring context) ...
     try:
         candidates = {}
         
@@ -100,7 +157,7 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
             result1 = await db.execute(text(query1), {"ids": trending_ids})
             for r in result1.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
             
-        # 2. Followed creators (Most recent from follows)
+        # 2. Followed creators
         if user_id:
             query2 = """
             SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
@@ -116,7 +173,7 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
             result2 = await db.execute(text(query2), {"user_id": user_id})
             for r in result2.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
             
-        # 3. Tag similarity (Direct interest matches)
+        # 3. Tag similarity
         if interest_vector:
             top_tags = sorted(interest_vector.items(), key=lambda x: x[1], reverse=True)[:10]
             tag_ids = [t[0] for t in top_tags]
@@ -135,7 +192,7 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
                 result3 = await db.execute(text(query3), {"tag_ids": tag_ids})
                 for r in result3.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
                 
-        # 4. Regional (Local community)
+        # 4. Regional
         query4 = """
         SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
         FROM videos v 
@@ -151,7 +208,7 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         result4 = await db.execute(text(query4), {"region": region})
         for r in result4.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
         
-        # 5. Discovery / Cold start pool (Videos with low views or recently created)
+        # 5. Discovery
         query5 = """
         SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
         FROM videos v 
@@ -168,7 +225,6 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         result5 = await db.execute(text(query5))
         for r in result5.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
         
-        # Deduplication and remove seen_ids
         final_candidates = []
         seen_set = set(seen_ids)
         for vid, row in candidates.items():
@@ -187,20 +243,24 @@ async def score_video(
     interest_vector: dict,
     video_tag_ids: list[str],
 ) -> float:
+    base_score = 0.0
     if user_embedding is not None and video_embedding is not None:
-        return float(np.dot(user_embedding, video_embedding))
+        base_score = float(np.dot(user_embedding, video_embedding))
+    else:
+        watch_ratio = float(video.get('avg_watch_ratio') or 0.0)
+        views = float(video.get('view_count', 1) or 1)
+        likes = float(video.get('like_count', 0) or 0)
+        comments = float(video.get('comment_count', 0) or 0)
         
-    watch_ratio = float(video.get('avg_watch_ratio') or 0.0)
-    views = float(video.get('view_count', 1) or 1)
-    likes = float(video.get('like_count', 0) or 0)
-    comments = float(video.get('comment_count', 0) or 0)
-    
-    like_rate = likes / max(views, 1)
-    comment_rate = comments / max(views, 1)
-    
-    similarity = 0.0
-    for tag_id in video_tag_ids:
-        similarity += float(interest_vector.get(str(tag_id), 0.0))
+        like_rate = likes / max(views, 1)
+        comment_rate = comments / max(views, 1)
         
-    score = watch_ratio*0.5 + like_rate*0.2 + comment_rate*0.1 + similarity*0.2
-    return score
+        similarity = 0.0
+        for tag_id in video_tag_ids:
+            similarity += float(interest_vector.get(str(tag_id), 0.0))
+            
+        base_score = watch_ratio*0.5 + like_rate*0.2 + comment_rate*0.1 + similarity*0.2
+
+    # Viral Tier Boost
+    viral_multiplier = await get_viral_multiplier(str(video.get('id')))
+    return base_score * viral_multiplier
