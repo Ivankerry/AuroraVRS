@@ -9,7 +9,7 @@ sys.path.append(os.getcwd())
 async def test_normalization_logic():
     print("\n--- 🧪 Testing Ranking Normalization Algorithm ---")
     try:
-        from api.core.ranking import score_video
+        from core.ranking import score_video
     except ImportError:
         print("❌ Error: Could not import ranking.py. Ensure you are running from the project root.")
         return
