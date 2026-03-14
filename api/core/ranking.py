@@ -154,6 +154,65 @@ async def get_video_tier(video_id: str) -> str | None:
     except Exception:
         return None
 
+async def get_rollout_stage(video_id: str, redis) -> int:
+    try:
+        stage = await redis.get(f"rollout_stage:{video_id}")
+        return int(stage) if stage else 1
+    except Exception: return 1
+
+async def record_rollout_serves(db, redis, video_ids: list[str]):
+    try:
+        for vid in video_ids:
+            count = await redis.incr(f"rollout_count:{vid}")
+            # Evaluate advancement every 100 serves
+            if count % 100 == 0:
+                await evaluate_rollout_advancement(db, redis, vid)
+    except Exception as e:
+        logger.error(f"Error recording rollout serves: {e}")
+
+async def evaluate_rollout_advancement(db, redis, video_id: str):
+    try:
+        # 1. Fetch current stats
+        query = text("SELECT view_count, like_count, avg_watch_ratio FROM videos WHERE id = :id")
+        res = await db.execute(query, {"id": video_id})
+        vid_data = res.mappings().first()
+        if not vid_data: return
+
+        views = float(vid_data['view_count'] or 1)
+        likes = float(vid_data['like_count'] or 0)
+        watch_ratio = float(vid_data['avg_watch_ratio'] or 0.0)
+        like_rate = likes / max(views, 1)
+
+        # 2. Get current stage
+        current_stage = await get_rollout_stage(video_id, redis)
+        if current_stage >= 4: return
+
+        # 3. Define thresholds
+        thresholds = {
+            1: {"watch": 0.4, "like": 0.0, "max_aud": 500},
+            2: {"watch": 0.5, "like": 0.05, "max_aud": 5000},
+            3: {"watch": 0.6, "like": 0.08, "max_aud": 50000}
+        }
+        
+        t = thresholds.get(current_stage)
+        if not t: return
+
+        # 4. Success check -> Advance
+        if watch_ratio > t["watch"] and like_rate >= t["like"]:
+            await redis.set(f"rollout_stage:{video_id}", current_stage + 1)
+            logger.info(f"✅ Video {video_id} ADVANCED to Stage {current_stage + 1}")
+            return
+
+        # 5. Failure check -> Removal
+        count = int(await redis.get(f"rollout_count:{video_id}") or 0)
+        if count >= t["max_aud"]:
+            await redis.sadd("rollout_failed", video_id)
+            await redis.expire("rollout_failed", 86400)
+            logger.warning(f"❌ Video {video_id} FAILED rollout at Stage {current_stage}. Removed from Discovery.")
+            
+    except Exception as e:
+        logger.error(f"Error in evaluate_rollout_advancement: {e}")
+
 async def get_trending_video_ids(region="global", limit=50) -> list[str]:
     try:
         from core.db import get_redis
@@ -228,7 +287,7 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         result4 = await db.execute(text(query4), {"region": region})
         for r in result4.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
         
-        # 5. Discovery
+        # 5. Discovery (Upgraded with Staged Rollout)
         query5 = """
         SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
         FROM videos v 
@@ -240,10 +299,41 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         AND v.status = 'READY' AND v.privacy = 'PUBLIC'
         GROUP BY v.id 
         ORDER BY RANDOM() 
-        LIMIT 100
+        LIMIT 200
         """
         result5 = await db.execute(text(query5))
-        for r in result5.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
+        discovery_rows = result5.mappings().fetchall()
+        
+        from core.db import get_redis
+        redis = await get_redis()
+        
+        failed_rollout = await redis.smembers("rollout_failed")
+        failed_set = {f.decode() if isinstance(f, bytes) else f for f in failed_rollout}
+        
+        for r in discovery_rows:
+            vid_str = str(r['id'])
+            if vid_str in failed_set: continue
+            
+            views = r['view_count'] or 0
+            
+            # Grandfathering: Already popular videos skip to Stage 4
+            if views >= 100:
+                await redis.set(f"rollout_stage:{vid_str}", 4)
+                candidates[vid_str] = dict(r)
+                continue
+
+            # Rollout Gating
+            stage = await get_rollout_stage(vid_str, redis)
+            if stage >= 4:
+                candidates[vid_str] = dict(r)
+                continue
+                
+            count = int(await redis.get(f"rollout_count:{vid_str}") or 0)
+            thresholds = {1: 500, 2: 5000, 3: 50000}
+            max_aud = thresholds.get(stage, 0)
+            
+            if count < max_aud:
+                candidates[vid_str] = dict(r)
         
         final_candidates = []
         seen_set = set(seen_ids)

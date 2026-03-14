@@ -225,8 +225,13 @@ async def get_feed(
         "next_cursor": next_cursor
     }
     
-    # Session update & Caching (happens on BOTH paths)
+    # Session update, Caching & Rollout Tracking
     try:
+        if final_feed:
+            # Track rollout serves for potential advancement
+            from core.ranking import record_rollout_serves
+            await record_rollout_serves(db, redis, [str(v['id']) for v in final_feed])
+
         if user_id and final_feed:
             # deduplication update - keep only last 500
             new_seen = list(seen_ids) + [str(v['id']) for v in final_feed]
