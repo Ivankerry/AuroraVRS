@@ -102,13 +102,23 @@ async def update_trending_score(video_id, engagement_velocity, region="global"):
             tier_key = f"viral_tier:{vid_str}"
             await redis.setex(tier_key, 300, tier)
             
-            # MEGA_VIRAL: Trigger Global Cache Invalidation
-            if tier == "MEGA_VIRAL":
-                logger.info(f"🔥 MEGA_VIRAL DETECTED: {vid_str} (z={z:.2f}). Invalidating feed cache.")
-                # Clear all feed cache keys
-                keys = await redis.keys("feed:*")
-                if keys:
-                    await redis.delete(*keys)
+            # Proactive Invalidation for VIRAL and MEGA_VIRAL
+            if tier in ["VIRAL", "MEGA_VIRAL"]:
+                notify_key = f"viral_tier_notified:{vid_str}"
+                already_notified = await redis.get(notify_key)
+                
+                if not already_notified:
+                    logger.info(f"🚀 PROACTIVE INVALIDATION: {vid_str} reached {tier} (z={z:.2f}).")
+                    await redis.setex(notify_key, 600, "1")
+                    
+                    # SCAN and delete feed_cache:*
+                    cursor = 0
+                    while True:
+                        cursor, keys = await redis.scan(cursor, match="feed_cache:*", count=100)
+                        if keys:
+                            await redis.delete(*keys)
+                        if cursor == 0:
+                            break
     except Exception as e:
         logger.error(f"Error updating trending score: {e}")
 

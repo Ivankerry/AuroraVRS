@@ -74,8 +74,8 @@ async def get_feed(
     
     if user_id:
         try:
-            # Check cache first
-            cache_key = f"feed:{user_id}:{page}"
+            # Check cache first (New Key Convention)
+            cache_key = f"feed_cache:{user_id}:{page}"
             cached_feed = await redis.get(cache_key)
             if cached_feed:
                 cached_data = json.loads(cached_feed)
@@ -248,10 +248,20 @@ async def get_feed(
             raise TypeError("Type not serializable")
             
         if user_id:
+            # Tiered TTL Logic
+            ttl = 300
+            for v in final_feed:
+                tier = v.get('viral_tier')
+                if tier in ["VIRAL", "MEGA_VIRAL"]:
+                    ttl = 20
+                    break
+                elif tier == "HOT" or tier == "WATCH":
+                    ttl = 60
+
             await redis.set(
-                f"feed:{user_id}:{page}", 
+                f"feed_cache:{user_id}:{page}", 
                 json.dumps(response_dict, default=default_serializer),
-                ex=300 # 5 min TTL
+                ex=ttl
             )
     except Exception as e:
         logger.error(f"Error updating feed session/cache: {e}")
