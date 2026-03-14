@@ -55,6 +55,19 @@ These endpoints manage the binary "Up/Down" state and update the `like_count` on
 
 ---
 
+## 💎 Metadata & Viral Info (Visual Badges)
+These fields are returned in both the `GET /feed` and `GET /videos/{id}` responses. Use them to display visual badges or filters in the frontend.
+
+### Response Fields
+- **`categories`**: Array of human-readable category names (e.g., `["Gaming", "Tech"]`).
+- **`tags`**: Array of human-readable tags (e.g., `["Esports", "Review"]`).
+- **`viral_tier`**: The current virality level (Null | "WATCH" | "HOT" | "VIRAL" | "MEGA_VIRAL").
+
+### Implementation Example:
+If `viral_tier` is **"MEGA_VIRAL"**, you should display a "🔥 Trending" or "Viral" badge on the video card.
+
+---
+
 ## 💡 Frontend Integration Tip
 For the best recommendation accuracy, your app should call **both** the Action endpoint and the General Event API.
 

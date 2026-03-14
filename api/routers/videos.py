@@ -252,8 +252,19 @@ async def search_videos(q: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{id}")
 async def get_video(id: str, user_id: Optional[str] = Depends(get_optional_user_id), db: AsyncSession = Depends(get_db)):
-    query = text("SELECT * FROM videos WHERE id = :id")
-    result = await db.execute(query, {"id": id})
+    query = """
+    SELECT v.*, 
+           array_agg(t.name) FILTER (WHERE t.name IS NOT NULL) as tags,
+           array_agg(c.name) FILTER (WHERE c.name IS NOT NULL) as categories
+    FROM videos v
+    LEFT JOIN video_tags vt ON v.id = vt.video_id
+    LEFT JOIN tags t ON t.id = vt.tag_id
+    LEFT JOIN video_categories vc ON v.id = vc.video_id
+    LEFT JOIN categories c ON c.id = vc.category_id
+    WHERE v.id = :id
+    GROUP BY v.id
+    """
+    result = await db.execute(text(query), {"id": id})
     video = result.mappings().first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -262,6 +273,13 @@ async def get_video(id: str, user_id: Optional[str] = Depends(get_optional_user_
         raise HTTPException(status_code=403, detail="Private video")
         
     video_dict = dict(video)
+    
+    # Standardize tags/categories to remove duplicates/empty
+    video_dict['tags'] = list(dict.fromkeys([t for t in video_dict.get('tags', []) if t]))
+    video_dict['categories'] = list(dict.fromkeys([c for c in video_dict.get('categories', []) if c]))
+    video_dict.pop('tag_ids', None)
+    video_dict.pop('category_ids', None)
+
     from core.ranking import get_video_tier
     video_dict["viral_tier"] = await get_video_tier(id)
     return video_dict
