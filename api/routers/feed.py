@@ -163,46 +163,33 @@ async def get_feed(
     if not candidates:
         candidates = await get_candidates(user_id, db, seen_ids, region, interest_vector, limit=100)
     
-    # 4. Score logic
+    # 4. Score logic (Refactored for Pool Normalization)
     scored_videos = []
     if candidates:
-        # Fetch video embeddings for ML scoring path if applicable
+        # Fetch video embeddings for the whole pool
         video_embeddings_map = {}
-        if user_embedding is not None:
-            cand_ids = [str(r['id']) for r in candidates]
-            query_vecs = "SELECT video_id, vector FROM video_tag_vectors WHERE video_id = ANY(:cand_ids)"
-            try:
-                vec_res = await db.execute(text(query_vecs), {"cand_ids": cand_ids})
-                vec_rows = vec_res.mappings().fetchall()
-                for vr in vec_rows:
-                    vec_str = vr['vector']
-                    if vec_str:
-                        if isinstance(vec_str, str):
-                            vec = json.loads(vec_str)
-                        else: vec = vec_str
-                        video_embeddings_map[str(vr['video_id'])] = np.array(vec, dtype=np.float32)
-            except Exception as e:
-                logger.error(f"Error fetching vectors for scoring: {e}")
+        cand_ids = [str(r['id']) for r in candidates]
+        query_vecs = "SELECT video_id, vector FROM video_tag_vectors WHERE video_id = ANY(:cand_ids)"
+        try:
+            vec_res = await db.execute(text(query_vecs), {"cand_ids": cand_ids})
+            vec_rows = vec_res.mappings().fetchall()
+            for vr in vec_rows:
+                vec_str = vr['vector']
+                if vec_str:
+                    if isinstance(vec_str, str):
+                        vec = json.loads(vec_str)
+                    else: vec = vec_str
+                    video_embeddings_map[str(vr['video_id'])] = np.array(vec, dtype=np.float32)
+        except Exception as e:
+            logger.error(f"Error fetching vectors for scoring: {e}")
 
-        for candidate_video in candidates:
-            try:
-                vid_str = str(candidate_video['id'])
-                # Only explicitly pass the embedding; ranking.py no longer slices
-                video_embedding = video_embeddings_map.get(vid_str)
-                if video_embedding is not None:
-                    video_embedding = video_embedding[:128]
-                    
-                score = await score_video(
-                    candidate_video, 
-                    user_embedding, 
-                    video_embedding, 
-                    interest_vector, 
-                    [str(t) for t in candidate_video.get('tag_ids', []) if t] + [str(c) for c in candidate_video.get('category_ids', []) if c]
-                )
-                scored_videos.append((score, candidate_video))
-            except Exception as e:
-                logger.error(f"Error scoring video: {e}")
-                pass
+        # Call refactored score_video with entire pool
+        scored_videos = await score_video(
+            candidates,
+            user_embedding,
+            video_embeddings_map,
+            interest_vector
+        )
                 
     if not scored_videos and not candidates:
         return await _cold_start_feed(db, redis, video_type, page, user_id, seen_ids)

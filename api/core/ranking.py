@@ -247,30 +247,72 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
         return []
 
 async def score_video(
-    video: dict,
+    candidates: list[dict], # Now receives the whole pool as requested
     user_embedding: np.ndarray | None,
-    video_embedding: np.ndarray | None,
+    video_embeddings_map: dict[str, np.ndarray],
     interest_vector: dict,
-    video_tag_ids: list[str],
-) -> float:
-    base_score = 0.0
-    if user_embedding is not None and video_embedding is not None:
-        base_score = float(np.dot(user_embedding, video_embedding))
-    else:
-        watch_ratio = float(video.get('avg_watch_ratio') or 0.0)
-        views = float(video.get('view_count', 1) or 1)
-        likes = float(video.get('like_count', 0) or 0)
-        comments = float(video.get('comment_count', 0) or 0)
-        
-        like_rate = likes / max(views, 1)
-        comment_rate = comments / max(views, 1)
-        
-        similarity = 0.0
-        for tag_id in video_tag_ids:
-            similarity += float(interest_vector.get(str(tag_id), 0.0))
-            
-        base_score = watch_ratio*0.5 + like_rate*0.2 + comment_rate*0.1 + similarity*0.2
+) -> list[tuple[float, dict]]:
+    if not candidates:
+        return []
 
-    # Viral Tier Boost
-    viral_multiplier = await get_viral_multiplier(str(video.get('id')))
-    return base_score * viral_multiplier
+    # 1. Compute Raw Metrics for the Pool
+    pool_metrics = []
+    for v in candidates:
+        views = float(v.get('view_count', 1) or 1)
+        likes = float(v.get('like_count', 0) or 0)
+        comments = float(v.get('comment_count', 0) or 0)
+        
+        m = {
+            "watch_ratio": float(v.get('avg_watch_ratio') or 0.0),
+            "like_rate": likes / max(views, 1),
+            "comment_rate": comments / max(views, 1),
+            "video": v
+        }
+        pool_metrics.append(m)
+
+    # 2. Compute Pool Min/Max for Normalization
+    def get_min_max(key):
+        vals = [m[key] for m in pool_metrics]
+        return min(vals), max(vals)
+
+    watch_min, watch_max = get_min_max("watch_ratio")
+    like_min, like_max   = get_min_max("like_rate")
+    comm_min, comm_max   = get_min_max("comment_rate")
+
+    def normalize(val, v_min, v_max):
+        if v_max == v_min: return 0.5
+        return (val - v_min) / (v_max - v_min)
+
+    # 3. Final Scoring Loop
+    scored_videos = []
+    for m in pool_metrics:
+        video = m["video"]
+        vid_str = str(video.get('id'))
+        
+        # A. Normalized Metrics
+        n_watch = normalize(m["watch_ratio"], watch_min, watch_max)
+        n_like  = normalize(m["like_rate"], like_min, like_max)
+        n_comm  = normalize(m["comment_rate"], comm_min, comm_max)
+
+        # B. Similarity Component (Unnormalized)
+        similarity = 0.0
+        v_emb = video_embeddings_map.get(vid_str)
+        if user_embedding is not None and v_emb is not None:
+            # Use dot product (already 0.0-1.0 if normalized correctly in trainer)
+            similarity = float(np.dot(user_embedding, v_emb[:128]))
+        else:
+            # Fallback: Tag Similarity (unnormalized overlap score)
+            tag_ids = [str(t) for t in video.get('tag_ids', []) if t] + [str(c) for c in video.get('category_ids', []) if c]
+            for t_id in tag_ids:
+                similarity += float(interest_vector.get(str(t_id), 0.0))
+        
+        # C. Weighted Formula
+        base_score = n_watch*0.5 + n_like*0.2 + n_comm*0.1 + similarity*0.2
+
+        # D. Viral Boost (applied after normalization)
+        viral_multiplier = await get_viral_multiplier(vid_str)
+        final_score = base_score * viral_multiplier
+        
+        scored_videos.append((final_score, video))
+
+    return scored_videos
