@@ -4,7 +4,6 @@ import asyncpg
 import asyncio
 import numpy as np
 from collections import defaultdict
-from tabulate import tabulate # Fallback to manual formatting if not on VPS
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BASE_URL     = os.getenv("API_URL", "http://localhost:8080/api/v1")
