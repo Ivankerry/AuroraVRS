@@ -135,6 +135,15 @@ app.add_middleware(
 async def health_check():
     return {"status": "ok"}
 
+@app.get("/")
+async def root():
+    return {
+        "message": "Welcome to AuroraVRS API",
+        "status": "online",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
+
 from routers import auth, users, feed, videos, events, misc
 app.include_router(auth.router)
 app.include_router(users.router)
