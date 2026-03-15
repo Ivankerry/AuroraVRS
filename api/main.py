@@ -144,14 +144,13 @@ async def root():
         "docs": "/docs"
     }
 
-from routers import auth, users, feed, videos, events, misc, webhook
+from routers import auth, users, feed, videos, events, misc
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(feed.router)
 app.include_router(videos.router)
 app.include_router(events.router)
 app.include_router(misc.router)
-app.include_router(webhook.router, prefix="/api/v1", tags=["Shield"])
 
 @app.post("/api/v1/ml/reload-model", dependencies=[Depends(require_admin)])
 async def reload_model():

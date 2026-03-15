@@ -10,43 +10,6 @@ import json
 from pydantic import BaseModel
 from core.db import get_db
 from core.auth import get_current_user_id, get_optional_user_id
-import httpx
-
-SHIELD_API = "http://62.84.176.140:7000"
-SHIELD_KEY = os.getenv("SHIELD_API_KEY", "")
-# Use the VPS IP for the callback so SHIELD can reach it
-EXTERNAL_URL = "http://62.84.176.140:8080"
-
-async def submit_to_shield(video_url: str, video_id: str) -> dict:
-    """
-    Submits a video to SHIELD for moderation.
-    video_url: the publicly accessible URL to the video file
-    video_id:  AURORA's UUID for this video (used as platform_video_id)
-    """
-    if not SHIELD_KEY:
-        logger.warning(f"SHIELD_API_KEY not set. Skipping moderation for video {video_id}")
-        return {"status": "skipped", "reason": "no api key"}
-        
-    try:
-        # Resolve internal URL to external if necessary, 
-        # but here we use the provided manifest_url which is relative.
-        # SHIELD needs a full URL.
-        full_video_url = f"{EXTERNAL_URL}{video_url}"
-        
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                f"{SHIELD_API}/v1/submit",
-                json={
-                    "video_url":         full_video_url,
-                    "platform_video_id": str(video_id),
-                    "callback_url":      f"{EXTERNAL_URL}/api/v1/shield/webhook",
-                },
-                headers={"X-Api-Key": SHIELD_KEY},
-            )
-            return r.json()
-    except Exception as e:
-        logger.error(f"Failed to submit video {video_id} to SHIELD: {e}")
-        return {"error": str(e)}
 
 router = APIRouter(prefix="/api/v1/videos", tags=["videos"])
 logger = logging.getLogger(__name__)
@@ -120,8 +83,8 @@ async def upload_video(
     
     try:
         query = text("""
-            INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url, streaming_ready) 
-            VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url, false)
+            INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url) 
+            VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url)
             RETURNING id
         """)
         await db.execute(query, {
@@ -166,9 +129,6 @@ async def upload_video(
         logger.error(f"❌ DATABASE ERROR during upload: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    # 5. Submit to SHIELD for moderation
-    await submit_to_shield(manifest_url, v_id)
-
     return {"status": "success", "video_id": v_id, "manifest_url": manifest_url}
 
 @router.post("/register")
@@ -187,13 +147,12 @@ async def register_video(req: VideoRegister, user_id: Optional[str] = Depends(ge
 
         # 2. Register Video
         query = text("""
-            INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url, view_count, like_count, streaming_ready) 
-            VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url, :view_count, :like_count, false)
+            INSERT INTO videos (id, creator_id, title, description, type, privacy, status, manifest_url, view_count, like_count) 
+            VALUES (:v_id, :creator_id, :title, :description, :type, :privacy, 'READY', :manifest_url, :view_count, :like_count)
             ON CONFLICT (id) DO UPDATE SET 
                 title = EXCLUDED.title, 
                 view_count = EXCLUDED.view_count,
                 like_count = EXCLUDED.like_count,
-                streaming_ready = EXCLUDED.streaming_ready,
                 updated_at = NOW()
             RETURNING id
         """)
@@ -225,9 +184,6 @@ async def register_video(req: VideoRegister, user_id: Optional[str] = Depends(ge
                 await db.execute(text("INSERT INTO video_tags (video_id, tag_id) VALUES (:v_id, :tag_id) ON CONFLICT DO NOTHING"), {"v_id": req.id, "tag_id": tag_id})
         
         await db.commit()
-        
-        # Submit to SHIELD for moderation
-        await submit_to_shield(req.manifest_url, req.id)
         
         # 5. Trending Boost (Background)
         from core.ranking import update_trending_score
