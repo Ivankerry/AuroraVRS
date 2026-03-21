@@ -35,9 +35,10 @@ def check_profile(token):
         # Check the feed to see what's being recommended
         r = requests.get(f"{API_BASE_URL}/feed", headers=headers)
         if r.status_code == 200:
-            feed = r.json()
+            feed_data = r.json()
+            videos = feed_data.get('videos', [])
             print("\n--- Current Feed Top 5 ---")
-            for i, vid in enumerate(feed[:5]):
+            for i, vid in enumerate(videos[:5]):
                 print(f"{i+1}. {vid.get('title')} (Cat: {vid.get('categories')})")
         else:
             print(f"❌ Feed error: {r.status_code}")
