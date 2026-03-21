@@ -32,6 +32,11 @@ async def record_event(req: EventCreate, bg_tasks: BackgroundTasks, user_id: Opt
         "metadata": meta_json
     })
     
+    # Update counts in background for high-intent signals
+    if req.event_type in ["LIKE", "SHARE", "SAVE"]:
+        col = "like_count" if req.event_type == "LIKE" else "share_count" if req.event_type == "SHARE" else "save_count"
+        await db.execute(text(f"UPDATE videos SET {col} = {col} + 1 WHERE id = :video_id"), {"video_id": req.video_id})
+    
     if user_id:
         # Update user interest vector counts
         uiv_query = text("""
@@ -54,11 +59,15 @@ async def record_event(req: EventCreate, bg_tasks: BackgroundTasks, user_id: Opt
         
         bg_tasks.add_task(update_interest_vector, user_id, tag_ids, req.event_type, req.watch_ratio, event_count)
         
+        # If SAVE, also record in saves table
+        if req.event_type == "SAVE":
+            await db.execute(text("INSERT INTO saves (user_id, video_id) VALUES (:user_id, :video_id) ON CONFLICT DO NOTHING"), {"user_id": user_id, "video_id": req.video_id})
+
     await db.commit()
     
     # Simple engagement velocity approximation
-    if req.event_type in ["LIKE", "SHARE"]:
-        velocity = 1.0
+    if req.event_type in ["LIKE", "SHARE", "SAVE"]:
+        velocity = 1.0 if req.event_type == "SAVE" else 0.8
     elif req.event_type in ["SKIP", "DISLIKE"]:
         velocity = 0.0
     else:

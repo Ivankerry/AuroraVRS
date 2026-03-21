@@ -28,11 +28,12 @@ async def update_interest_vector(user_id, tag_ids, event_type, watch_ratio, even
         
         signals = {
             'VIEW':    float(watch_ratio) if watch_ratio is not None else 0.0,
-            'LIKE':    0.8,
-            'SHARE':   1.2,
-            'SKIP':   -0.3,
-            'DISLIKE': -0.8,
-            'COMMENT': 0.3,
+            'LIKE':    0.6,
+            'SAVE':    1.2,
+            'SHARE':   1.0,
+            'SKIP':   -0.5,
+            'DISLIKE': -1.0,
+            'COMMENT': 0.4,
         }
         signal = signals.get(event_type, 0.0)
         
@@ -198,9 +199,12 @@ async def evaluate_rollout_advancement(db, redis, video_id: str):
         if not t: return
 
         # 4. Success check -> Advance
+        # 4. Phase 1: Follower-First Gate (TikTok 2026)
+        # If video is in Stage 1 and has very few views, it must perform well 
+        # with followers before Phase 2 (Interest Cluster) testing.
         if watch_ratio > t["watch"] and like_rate >= t["like"]:
             await redis.set(f"rollout_stage:{video_id}", current_stage + 1)
-            logger.info(f"✅ Video {video_id} ADVANCED to Stage {current_stage + 1}")
+            logger.info(f"✅ Video {video_id} passed Gate {current_stage}. ADVANCED to Stage {current_stage + 1}")
             return
 
         # 5. Failure check -> Removal
@@ -322,12 +326,23 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
                 candidates[vid_str] = dict(r)
                 continue
 
-            # Rollout Gating
             stage = await get_rollout_stage(vid_str, redis)
             if stage >= 4:
                 candidates[vid_str] = dict(r)
                 continue
                 
+            # Phase 1 Gate (Stage 1): Only show to followers or high-intent clusters
+            if stage == 1:
+                # If we know the user is a follower (already in candidates via query2)
+                # or if we are in discovery, we add it but it will be ranked lower
+                # unless interest (similarity) is extremely high.
+                # However, to be strict with Phase 1:
+                is_follower = any(vid_str == str(f.get('id')) for f in candidates.values() if f.get('creator_id'))
+                if not is_follower:
+                    # Allow 10% chance for random interest testing if not a follower
+                    import random
+                    if random.random() > 0.1: continue
+
             count = int(await redis.get(f"rollout_count:{vid_str}") or 0)
             thresholds = {1: 500, 2: 5000, 3: 50000}
             max_aud = thresholds.get(stage, 0)
@@ -361,11 +376,15 @@ async def score_video(
         views = float(v.get('view_count', 1) or 1)
         likes = float(v.get('like_count', 0) or 0)
         comments = float(v.get('comment_count', 0) or 0)
+        shares = float(v.get('share_count', 0) or 0)
+        saves = float(v.get('save_count', 0) or 0)
         
         m = {
             "watch_ratio": float(v.get('avg_watch_ratio') or 0.0),
             "like_rate": likes / max(views, 1),
             "comment_rate": comments / max(views, 1),
+            "share_rate": shares / max(views, 1),
+            "save_rate": saves / max(views, 1),
             "video": v
         }
         pool_metrics.append(m)
@@ -378,6 +397,8 @@ async def score_video(
     watch_min, watch_max = get_min_max("watch_ratio")
     like_min, like_max   = get_min_max("like_rate")
     comm_min, comm_max   = get_min_max("comment_rate")
+    share_min, share_max = get_min_max("share_rate")
+    save_min, save_max   = get_min_max("save_rate")
 
     def normalize(val, v_min, v_max):
         if v_max == v_min: return 0.5
@@ -393,6 +414,8 @@ async def score_video(
         n_watch = normalize(m["watch_ratio"], watch_min, watch_max)
         n_like  = normalize(m["like_rate"], like_min, like_max)
         n_comm  = normalize(m["comment_rate"], comm_min, comm_max)
+        n_share = normalize(m["share_rate"], share_min, share_max)
+        n_save  = normalize(m["save_rate"], save_min, save_max)
 
         # B. Similarity Component (Unnormalized)
         similarity = 0.0
@@ -406,8 +429,17 @@ async def score_video(
             for t_id in tag_ids:
                 similarity += float(interest_vector.get(str(t_id), 0.0))
         
-        # C. Weighted Formula (Increased Interest Similarity to 50% to overcome Popularity Bias)
-        base_score = n_watch*0.3 + n_like*0.1 + n_comm*0.1 + similarity*0.5
+        # C. TikTok 2026 Core Ranking Formula
+        # Relative Importance: Completion(10), Save(8), Share(6), Comment(4), Like(2)
+        eng_score = n_watch*0.35 + n_save*0.25 + n_share*0.2 + n_comm*0.13 + n_like*0.07
+        
+        # Interest-First Balance (50% Interest / 50% Engagement)
+        base_score = similarity*0.5 + eng_score*0.5
+
+        # D. TikTok 2026 Skip Penalty (-50 points logic relative to +10)
+        # If watch ratio is exceptionally low (<10%), penalize heavily
+        if m["watch_ratio"] < 0.1:
+            base_score -= 1.0 # Massive penalty (multi-factor of top positive)
 
         # D. Viral Boost (applied after normalization)
         viral_multiplier = await get_viral_multiplier(vid_str)

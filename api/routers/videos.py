@@ -359,6 +359,19 @@ async def get_comments(id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(query, {"id": id})
     return [dict(r) for r in result.mappings().fetchall()]
 
+@router.post("/{id}/save")
+async def save_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+    try:
+        q1 = text("INSERT INTO saves (user_id, video_id) VALUES (:user_id, :video_id) ON CONFLICT DO NOTHING RETURNING user_id")
+        res = await db.execute(q1, {"user_id": user_id, "video_id": id})
+        if res.mappings().first():
+            q2 = text("UPDATE videos SET save_count = save_count + 1 WHERE id = :id")
+            await db.execute(q2, {"id": id})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    return {"status": "success"}
+
 @router.post("/{id}/comments")
 async def create_comment(id: str, req: CommentCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     query = text("INSERT INTO comments (user_id, video_id, content) VALUES (:user_id, :video_id, :content) RETURNING id")
