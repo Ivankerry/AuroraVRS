@@ -406,8 +406,8 @@ async def score_video(
             for t_id in tag_ids:
                 similarity += float(interest_vector.get(str(t_id), 0.0))
         
-        # C. Weighted Formula
-        base_score = n_watch*0.5 + n_like*0.2 + n_comm*0.1 + similarity*0.2
+        # C. Weighted Formula (Increased Interest Similarity to 50% to overcome Popularity Bias)
+        base_score = n_watch*0.3 + n_like*0.1 + n_comm*0.1 + similarity*0.5
 
         # D. Viral Boost (applied after normalization)
         viral_multiplier = await get_viral_multiplier(vid_str)
