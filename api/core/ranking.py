@@ -458,6 +458,8 @@ async def score_video(
             tag_ids = [str(t) for t in video.get('tag_ids', []) if t] + [str(c) for c in video.get('category_ids', []) if c]
             for t_id in tag_ids:
                 similarity += float(interest_vector.get(str(t_id), 0.0))
+            # Normalize similarity to prevent filter bubbles (Echo Chamber)
+            similarity = max(0.0, min(1.0, similarity))
         
         # C. TikTok 2026 Core Ranking Formula
         # Relative Importance: Completion(10), Save(8), Share(6), Comment(4), Like(2)
