@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel
 from core.db import get_db
 from core.auth import get_optional_user_id
-from core.ranking import update_interest_vector, update_trending_score
+from core.ranking import update_interest_vector, update_trending_score, clear_user_feed_cache
 import json
 
 router = APIRouter()
@@ -58,6 +58,10 @@ async def record_event(req: EventCreate, bg_tasks: BackgroundTasks, user_id: Opt
         tag_ids = [str(r["tag_id"]) for r in tags_res.mappings().fetchall()]
         
         bg_tasks.add_task(update_interest_vector, user_id, tag_ids, req.event_type, req.watch_ratio, event_count)
+        
+        # Instantly invalidate stale feeds when building new interests
+        if req.event_type in ["LIKE", "SHARE", "SAVE"]:
+            bg_tasks.add_task(clear_user_feed_cache, user_id)
         
         # If SAVE, also record in saves table
         if req.event_type == "SAVE":

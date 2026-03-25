@@ -233,13 +233,13 @@ async def get_feed(
             await record_rollout_serves(db, redis, [str(v['id']) for v in final_feed])
 
         if user_id and final_feed:
-            # deduplication update - keep only last 500
+            # deduplication update - keep only last 100 (reduced to prevent content pool exhaustion on small DBs)
             new_seen = list(seen_ids) + [str(v['id']) for v in final_feed]
             if new_seen:
                 await redis.set(
                     f"session:{user_id}",
-                    json.dumps({"seen": new_seen[-500:]}),
-                    ex=3600
+                    json.dumps({"seen": new_seen[-100:]}),
+                    ex=600
                 )
                 
         # cache write

@@ -15,6 +15,21 @@ async def get_interest_vector(user_id: str) -> dict:
         val = await redis.get(f"iv:{user_id}")
         if val:
             return json.loads(val)
+            
+        # Hydration: Fallback to Postgres if Redis cache expired (24h TTL)
+        from core.db import AsyncSessionLocal
+        from sqlalchemy import text as sa_text
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(sa_text(
+                "SELECT tag_weights FROM user_interest_vectors WHERE user_id = :user_id"
+            ), {"user_id": user_id})
+            row = result.mappings().first()
+            if row and row['tag_weights']:
+                weights = json.loads(row['tag_weights']) if isinstance(row['tag_weights'], str) else row['tag_weights']
+                # Rehydrate Redis for 24 hours
+                await redis.setex(f"iv:{user_id}", 86400, json.dumps(weights))
+                return weights
+
     except Exception as e:
         logger.error(f"Error getting interest vector: {e}")
     return {}
@@ -28,6 +43,7 @@ async def update_interest_vector(user_id, tag_ids, event_type, watch_ratio, even
         
         signals = {
             'VIEW':    float(watch_ratio) if watch_ratio is not None else 0.0,
+            'WATCH':   float(watch_ratio) if watch_ratio is not None else 0.0,
             'LIKE':    0.6,
             'SAVE':    1.2,
             'SHARE':   1.0,
@@ -67,6 +83,20 @@ async def update_interest_vector(user_id, tag_ids, event_type, watch_ratio, even
     except Exception as e:
         logger.error(f"Error updating interest vector: {e}")
         return {}
+
+async def clear_user_feed_cache(user_id: str):
+    try:
+        from core.db import get_redis
+        redis = await get_redis()
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match=f"feed_cache:{user_id}:*", count=100)
+            if keys:
+                await redis.delete(*keys)
+            if cursor == 0:
+                break
+    except Exception as e:
+        logger.error(f"Error clearing feed cache for {user_id}: {e}")
 
 async def update_trending_score(video_id, engagement_velocity, region="global"):
     try:

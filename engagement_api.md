@@ -1,76 +1,154 @@
 # AuroraVRS: Video Engagement & Events API
 
-This document outlines all supported endpoints for recording user interactions with videos. These events are divided into **Action Endpoints** (which update database counts like likes and comments) and the **General Events API** (which feeds the recommendation engine).
+This document outlines all supported endpoints for recording user interactions. For the **TikTok 2026 "Interest-First" Upgrade**, the separation between **Action Endpoints** (State) and the **General Events API** (Signals) is critical.
 
 ---
 
-## 🚀 General Events API (ML Signals)
-This is the primary endpoint for the recommendation engine. Every interaction logged here directly influences the user's future feed.
+## 🚀 General Events API (ML & Ranking Signals)
+**Endpoint**: `POST /api/v1/events`  
+**Description**: Primary input for the recommendation engine. These signals update the User Interest Vector (UIV) and the Global Trending Pool.
 
-### `POST /api/v1/events`
-**Description**: Records a raw engagement signal.
-**Authentication**: Optional (Anonymous events are allowed but don't influence personalization).
-
-**Request Body**:
+### Signal Payload
 ```json
 {
   "video_id": "uuid-string",
-  "event_type": "VIEW | LIKE | SHARE | DISLIKE | SKIP",
+  "event_type": "WATCH | VIEW | LIKE | SAVE | SHARE | COMMENT | DISLIKE | SKIP",
   "watch_ratio": 0.85, 
-  "metadata": { "device": "ios", "source": "feed" }
+  "metadata": { "source": "feed" }
 }
 ```
 
-| Event Type | Recommendation Impact |
-| :--- | :--- |
-| **VIEW** | Positive signal (especially if `watch_ratio` > 0.5). |
-| **LIKE** | Strong positive signal. |
-| **SHARE** | Strong positive signal. |
-| **DISLIKE** | Strong negative signal (hides similar content). |
-| **SKIP** | Subtle negative signal (indicates lack of interest). |
+### 2026 Signal Weights & logic
+Every event type has a specific weight applied to the user's interest categories:
+
+| Event Type | Weight | Recommendation Impact | Frontend Trigger Logic |
+| :--- | :--- | :--- | :--- |
+| **WATCH / VIEW** | 0.0 - 1.0 | Based on `watch_ratio`. | Fire every 5 seconds or at completion. |
+| **LIKE** | +0.6 | Increases category affinity. | Fire on "Double Tap" or Like button press. |
+| **SAVE** | +1.2 | **Highest positive signal.** | Fire when added to "Favorites". |
+| **SHARE** | +1.0 | Strong positive signal. | Fire when share sheet is opened. |
+| **COMMENT** | +0.4 | Medium positive signal. | Fire when a comment is successfully posted. |
+| **DISLIKE** | -1.0 | Blocks similar content. | Fire on "Long Press -> Not Interested". |
+| **SKIP** | **-0.5** | **10% Penalty Rule (see below).** | Fire if swiped away < 20% watched. |
+
+> [!IMPORTANT]
+> **The 10% Skip Penalty**: If a `SKIP` event is fired with a `watch_ratio < 0.1`, a massive negative ranker (-1.0 points) is applied to that video's tags for the next 24 hours.
 
 ---
 
 ## 📊 Action Endpoints (Database Updates)
-These endpoints explicitly update public-facing metrics like like counts and comment threads.
+These endpoints update public counters and relational tables. They should be called alongside the Events API.
 
-### 1. Like / Dislike
-These endpoints manage the binary "Up/Down" state and update the `like_count` on the video.
+### 1. Unified Reactions
+*   **POST** `/api/v1/videos/{id}/like`  
+    Adds a like record. Automatically removes a dislike if it exists.
+*   **POST** `/api/v1/videos/{id}/dislike`  
+    Adds a dislike record. Automatically removes a like if it exists.
 
-*   **POST** `/api/v1/videos/{video_id}/like`
-    *   *Effect*: Adds a like, removes a dislike if present.
-*   **POST** `/api/v1/videos/{video_id}/dislike`
-    *   *Effect*: Adds a dislike, removes a like if present.
+### 2. Social & Collections
+*   **POST** `/api/v1/videos/{id}/save`  
+    Adds video to user's "Saves" table for later retrieval.
+*   **POST** `/api/v1/videos/{id}/comments`  
+    Payload: `{ "content": "..." }`. Creates a comment record.
 
-### 2. Views
-*   **POST** `/api/v1/videos/{video_id}/view`
-    *   *Effect*: Increments the public `view_count` by 1. Should be called when a video starts playing.
-
-### 3. Comments
-*   **GET** `/api/v1/videos/{video_id}/comments`
-    *   *Effect*: Retrieves the latest 50 comments for a video.
-*   **POST** `/api/v1/videos/{video_id}/comments`
-    *   *Request Body*: `{ "content": "Great video!" }`
-    *   *Effect*: Adds a comment and increments the `comment_count`.
+### 3. Public View Counter
+*   **POST** `/api/v1/videos/{id}/view`  
+    Increments the global `view_count`. Should be fired *once* per session per video.
 
 ---
 
-## 💎 Metadata & Viral Info (Visual Badges)
-These fields are returned in both the `GET /feed` and `GET /videos/{id}` responses. Use them to display visual badges or filters in the frontend.
-
-### Response Fields
-- **`categories`**: Array of human-readable category names (e.g., `["Gaming", "Tech"]`).
-- **`tags`**: Array of human-readable tags (e.g., `["Esports", "Review"]`).
-- **`viral_tier`**: The current virality level (Null | "WATCH" | "HOT" | "VIRAL" | "MEGA_VIRAL").
-
-### Implementation Example:
-If `viral_tier` is **"MEGA_VIRAL"**, you should display a "🔥 Trending" or "Viral" badge on the video card.
+## 💎 Metadata Enrichment (UI Badges)
+API responses from `/feed` include `viral_tier`. Use this for visual decoration:
+- `WATCH`: Low-level breakout (1.5x boost)
+- `HOT`: Trending (2x boost)
+- `VIRAL`: Regional Hit (3x boost)
+- `MEGA_VIRAL`: Global Sensation (5x boost)
 
 ---
 
-## 💡 Frontend Integration Tip
-For the best recommendation accuracy, your app should call **both** the Action endpoint and the General Event API.
+## 💡 Frontend Implementation Flow
+To ensure data consistency and AI accuracy, your app must trigger **two calls** for most actions:
 
-**Example: When a user likes a video:**
-1.  Call `POST /api/v1/videos/{id}/like` (Updates the UI count).
-2.  Call `POST /api/v1/events` with type `LIKE` (Tells the AI to show more like this).
+1.  **State Call**: e.g., `POST /videos/123/like` (Increments the UI counter).
+2.  **Signal Call**: e.g., `POST /events` with type `LIKE` (Updates personalization vector).
+
+---
+
+## ⏭️ Detailed Skip Event (The "How-To")
+The `SKIP` event is the only negative behavioral signal that doesn't require a manual "Dislike" from the user. It is inferred by the frontend based on navigation.
+
+### When to Fire
+*   **Trigger**: As soon as the user swiping *away* from a video (Next/Back).
+*   **Threshold**: Only fire if the video has been active for **less than 15 seconds** or **less than 20%** of its total duration.
+*   **Wait**: Do NOT fire a skip if the user simply paused and then resumed.
+
+### Implementation Example (Typescript/React)
+```typescript
+const onVideoSwipeAway = (videoId: string, currentTime: number, duration: number) => {
+  const watchRatio = currentTime / duration;
+
+  // The 10% Penalty Zone
+  if (watchRatio < 0.1) {
+    console.log("⚠️ Extreme Skip Detected: Triggering Penalty");
+  }
+
+  // Only report as SKIP if < 20% watched
+  if (watchRatio < 0.2) {
+    fetch('/api/v1/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        video_id: videoId,
+        event_type: 'SKIP',
+        watch_ratio: watchRatio,
+        metadata: { trigger: 'user_swipe' }
+      })
+    });
+  }
+};
+```
+
+### Implementation Example (Flutter/Dart)
+In Flutter, this usually happens inside your `PageView` or `ListView` when the `pageIndex` changes. Use your `VideoPlayerController` to get the current position.
+
+```dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:video_player/video_player.dart';
+
+Future<void> reportSkip(VideoPlayerController controller, String videoId) async {
+  final position = await controller.position;
+  final duration = controller.value.duration;
+  
+  if (position == null || duration == Duration.zero) return;
+
+  final double watchRatio = position.inMilliseconds / duration.inMilliseconds;
+
+  // The 10% Penalty Zone (Logged for debugging)
+  if (watchRatio < 0.1) {
+    print("AI Alert: Critical skip penalty triggered for $videoId");
+  }
+
+  // Mandatory: Only fire SKIP if watch ratio is under 20%
+  if (watchRatio < 0.2) {
+    await http.post(
+      Uri.parse('https://api.aurora-vrs.com/api/v1/events'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $jwtToken',
+      },
+      body: jsonEncode({
+        'video_id': videoId,
+        'event_type': 'SKIP',
+        'watch_ratio': watchRatio,
+        'metadata': {'platform': 'flutter', 'threshold': '20%'},
+      }),
+    );
+  }
+}
+```
+
+#### Detailed Trigger Flow in Flutter:
+1.  **Listen to Scroll**: In your `PageView.onPageChanged(int index)`, get the controller for the *previously active* video (the one the user just left).
+2.  **Capture Position**: Immediately call `controller.position` (it's asynchronous).
+3.  **Fire and Forget**: Don't await the network call if it blocks your UI; fire the `reportSkip` function in the background as you transition to the new video.
+4.  **Dispose Safety**: Ensure you capture the position and fire the event *before* you call `controller.dispose()` on the old video.

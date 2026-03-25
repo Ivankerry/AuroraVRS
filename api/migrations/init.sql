@@ -132,7 +132,7 @@ CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
-    event_type TEXT CHECK(event_type IN ('VIEW','LIKE','DISLIKE','SHARE','COMMENT','SKIP','SEARCH','PROFILE_VISIT')),
+    event_type TEXT CHECK(event_type IN ('VIEW','WATCH','LIKE','SAVE','DISLIKE','SHARE','COMMENT','SKIP','SEARCH','PROFILE_VISIT')),
     watch_ratio FLOAT,
     metadata JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
