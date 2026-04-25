@@ -25,6 +25,24 @@ Evidence base used:
 
 Date captured: 2026-04-25
 
+## Architecture Diagrams
+
+### Backend Recommendation System Architecture
+
+![AuroraVRS backend recommendation system architecture](images/AuroraVRS%20backend%20recommendation%20system%20architecture.png)
+
+### Feed Generation Process (Existing and New Users)
+
+![Feed generation process existing and new users](images/feed%20generation%20process%20existing%20and%20new%20users.png)
+
+### Sequence Diagram 1
+
+![Sequence diagram 1](images/sequenceDiagram1.png)
+
+### Sequence Diagram 2
+
+![Sequence diagram 2](images/sequenceDiagram2.png)
+
 ---
 
 ## 1. System Overview
