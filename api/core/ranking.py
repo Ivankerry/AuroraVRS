@@ -7,6 +7,229 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 MIN_EVENTS_FOR_MODEL = int(os.getenv("MIN_EVENTS_FOR_MODEL", "5000"))
+PROBABILITY_FLOOR = 0.02
+FLOAT_TOL = 1e-9
+
+
+def _stable_softmax(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    max_v = max(values)
+    exps = [np.exp(v - max_v) for v in values]
+    denom = float(sum(exps))
+    if denom <= FLOAT_TOL:
+        return [1.0 / len(values)] * len(values)
+    return [float(x / denom) for x in exps]
+
+
+def _enforce_floor_and_sum(
+    weights: dict[str, float],
+    probability_floor: float = PROBABILITY_FLOOR
+) -> dict[str, float]:
+    if not weights:
+        return {}
+
+    keys = list(weights.keys())
+    n = len(keys)
+
+    if probability_floor <= 0:
+        probability_floor = 0.0
+
+    # If floor is mathematically impossible for the number of tags,
+    # return a valid fallback distribution.
+    if n * probability_floor >= 1.0:
+        uniform = 1.0 / n
+        return {k: uniform for k in keys}
+
+    probs = {k: max(float(v), 0.0) for k, v in weights.items()}
+    total = float(sum(probs.values()))
+    if total <= FLOAT_TOL:
+        uniform = 1.0 / n
+        probs = {k: uniform for k in keys}
+    else:
+        probs = {k: (v / total) for k, v in probs.items()}
+
+    fixed: set[str] = set()
+    while True:
+        violating = [k for k, v in probs.items() if (k not in fixed and v < probability_floor)]
+        if not violating:
+            break
+
+        fixed.update(violating)
+        fixed_mass = probability_floor * len(fixed)
+        if fixed_mass >= 1.0:
+            uniform = 1.0 / n
+            return {k: uniform for k in keys}
+
+        unfixed = [k for k in keys if k not in fixed]
+        out: dict[str, float] = {k: probability_floor for k in fixed}
+        remaining_mass = 1.0 - fixed_mass
+
+        unfixed_sum = float(sum(probs[k] for k in unfixed))
+        if not unfixed:
+            probs = out
+            break
+
+        if unfixed_sum <= FLOAT_TOL:
+            share = remaining_mass / len(unfixed)
+            for k in unfixed:
+                out[k] = share
+        else:
+            for k in unfixed:
+                out[k] = (probs[k] / unfixed_sum) * remaining_mass
+        probs = out
+
+    # Final exactness correction for floating-point drift.
+    drift = 1.0 - float(sum(probs.values()))
+    if abs(drift) > 1e-12 and probs:
+        anchor = max(probs, key=probs.get)
+        probs[anchor] += drift
+
+    return probs
+
+
+def normalize_to_probability_distribution(
+    weights: dict[str, float],
+    probability_floor: float = PROBABILITY_FLOOR
+) -> dict[str, float]:
+    if not weights:
+        return {}
+
+    sanitized: dict[str, float] = {}
+    for k, v in weights.items():
+        try:
+            fv = float(v)
+            if np.isfinite(fv):
+                sanitized[str(k)] = fv
+        except Exception:
+            continue
+
+    if not sanitized:
+        return {}
+
+    vals = list(sanitized.values())
+    total = float(sum(vals))
+    already_probs = all(v >= 0.0 for v in vals) and abs(total - 1.0) <= 1e-6
+
+    if already_probs:
+        normalized = {k: (v / total if total > FLOAT_TOL else 0.0) for k, v in sanitized.items()}
+    else:
+        # Legacy [-1,1] or arbitrary scale fallback to softmax.
+        probs = _stable_softmax(vals)
+        normalized = {k: p for k, p in zip(sanitized.keys(), probs)}
+
+    return _enforce_floor_and_sum(normalized, probability_floor=probability_floor)
+
+
+def _take_mass_equally(
+    probs: dict[str, float],
+    keys: list[str],
+    amount: float,
+    probability_floor: float = PROBABILITY_FLOOR
+) -> float:
+    if amount <= FLOAT_TOL or not keys:
+        return 0.0
+
+    remaining = float(amount)
+    removed = 0.0
+    active = [k for k in keys if probs.get(k, 0.0) > probability_floor + FLOAT_TOL]
+
+    while remaining > FLOAT_TOL and active:
+        share = remaining / len(active)
+        step_removed = 0.0
+        next_active: list[str] = []
+
+        for k in active:
+            room = max(probs.get(k, 0.0) - probability_floor, 0.0)
+            take = min(share, room)
+            if take > 0.0:
+                probs[k] = probs.get(k, 0.0) - take
+                step_removed += take
+
+            if probs.get(k, 0.0) > probability_floor + FLOAT_TOL:
+                next_active.append(k)
+
+        if step_removed <= FLOAT_TOL:
+            break
+
+        removed += step_removed
+        remaining -= step_removed
+        active = next_active
+
+    return removed
+
+
+def _add_mass_equally(probs: dict[str, float], keys: list[str], amount: float) -> None:
+    if amount <= FLOAT_TOL or not keys:
+        return
+    share = amount / len(keys)
+    for k in keys:
+        probs[k] = probs.get(k, 0.0) + share
+
+
+async def update_interest_vector_hmm(
+    user_id: str,
+    event_tags: list[str],
+    event_signal: float,
+    event_count: int,
+    current_weights: dict[str, float],
+    *,
+    is_watch_event: bool = False
+) -> dict[str, float]:
+    del user_id  # Keep signature explicit while function remains pure.
+
+    probs = normalize_to_probability_distribution(current_weights)
+    unique_tags = list(dict.fromkeys(str(t) for t in event_tags if t is not None))
+
+    if not unique_tags:
+        return probs
+
+    if not probs:
+        seed = {t: 1.0 / len(unique_tags) for t in unique_tags}
+        return _enforce_floor_and_sum(seed)
+
+    # Ensure new event tags exist in the distribution before redistribution math.
+    new_tags = [t for t in unique_tags if t not in probs]
+    if new_tags:
+        existing = list(probs.keys())
+        for t in new_tags:
+            probs[t] = 0.0
+
+        seed_needed = PROBABILITY_FLOOR * len(new_tags)
+        removed = _take_mass_equally(probs, existing, seed_needed, probability_floor=PROBABILITY_FLOOR)
+        _add_mass_equally(probs, new_tags, removed)
+        probs = _enforce_floor_and_sum(probs)
+
+    alpha = 0.8 if int(event_count) < 50 else 0.2
+    if is_watch_event and float(event_signal) >= 0.6:
+        alpha = 0.5
+
+    signal = float(event_signal)
+    delta = alpha * abs(signal)
+    if delta <= FLOAT_TOL:
+        return _enforce_floor_and_sum(probs)
+
+    targets = [t for t in unique_tags if t in probs]
+    if not targets:
+        return _enforce_floor_and_sum(probs)
+
+    target_set = set(targets)
+    others = [k for k in probs.keys() if k not in target_set]
+
+    if signal > 0.0:
+        if not others:
+            return _enforce_floor_and_sum(probs)
+        shifted = _take_mass_equally(probs, others, delta, probability_floor=PROBABILITY_FLOOR)
+        _add_mass_equally(probs, targets, shifted)
+    elif signal < 0.0:
+        shifted = _take_mass_equally(probs, targets, delta, probability_floor=PROBABILITY_FLOOR)
+        if others:
+            _add_mass_equally(probs, others, shifted)
+        else:
+            # Single-tag safety: no place to move probability, so keep distribution stable.
+            _add_mass_equally(probs, targets, shifted)
+
+    return _enforce_floor_and_sum(probs)
 
 async def get_interest_vector(user_id: str) -> dict:
     try:
@@ -34,7 +257,13 @@ async def get_interest_vector(user_id: str) -> dict:
         logger.error(f"Error getting interest vector: {e}")
     return {}
 
-async def update_interest_vector(user_id, tag_ids, event_type, watch_ratio, event_count) -> dict:
+async def update_interest_vector(
+    user_id: str,
+    tag_ids: list[str],
+    event_type: str,
+    watch_ratio: float | None,
+    event_count: int
+) -> dict[str, float]:
     try:
         from core.db import get_redis
         redis = await get_redis()
@@ -51,17 +280,17 @@ async def update_interest_vector(user_id, tag_ids, event_type, watch_ratio, even
             'DISLIKE': -1.0,
             'COMMENT': 0.4,
         }
-        signal = signals.get(event_type, 0.0)
-        
-        if event_count < 50:
-            signal *= 3.0
-            
-        for tag_id in tag_ids:
-            tag_id_str = str(tag_id)
-            old_weight = float(iv.get(tag_id_str, 0.0))
-            new_weight = 0.15 * signal + 0.85 * old_weight
-            new_weight = max(-1.0, min(1.0, new_weight))
-            iv[tag_id_str] = new_weight
+        normalized_event = str(event_type or "").upper()
+        signal = signals.get(normalized_event, 0.0)
+
+        iv = await update_interest_vector_hmm(
+            user_id=user_id,
+            event_tags=[str(tag_id) for tag_id in tag_ids],
+            event_signal=signal,
+            event_count=int(event_count),
+            current_weights=iv,
+            is_watch_event=normalized_event in {"VIEW", "WATCH"}
+        )
             
         await redis.setex(f"iv:{user_id}", 86400, json.dumps(iv))
         
