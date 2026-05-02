@@ -555,6 +555,9 @@ The main required environment values are:
 Other relevant values include:
 - `MIN_EVENTS_FOR_MODEL`
 - `TWO_TOWER_RETRAIN_INTERVAL_HOURS`
+- `ALLOWED_ORIGINS`
+- `DB_POOL_SIZE`
+- `DB_POOL_OVERFLOW`
 - `VIDEO_STORAGE_PATH`
 - `MODEL_STORAGE_PATH`
 
@@ -1211,6 +1214,9 @@ The backend expects at least:
 Optional operational values include:
 - `MIN_EVENTS_FOR_MODEL`
 - `TWO_TOWER_RETRAIN_INTERVAL_HOURS`
+- `ALLOWED_ORIGINS`
+- `DB_POOL_SIZE`
+- `DB_POOL_OVERFLOW`
 - `VIDEO_STORAGE_PATH`
 - `MODEL_STORAGE_PATH`
 

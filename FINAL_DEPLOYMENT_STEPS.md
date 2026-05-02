@@ -36,6 +36,9 @@ Before connecting to the VPS, ensure all fixes are committed and pushed to your 
    # Example
    DATABASE_URL=postgresql://user:password@db:5432/aurora
    REDIS_URL=redis://redis:6379/0
+   ALLOWED_ORIGINS=https://your-frontend-domain.com,http://localhost:3000
+   DB_POOL_SIZE=20
+   DB_POOL_OVERFLOW=40
    MODEL_PATH=/app/storage/models/two_tower.pt
    # ... other variables ...
    ```

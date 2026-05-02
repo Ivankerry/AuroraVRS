@@ -528,8 +528,8 @@ Followed creators and creator-affinity creators are now injected directly into c
 5. Vector dimensional duality
 Storage vectors are 256-d while model and FAISS logic use 128 effective dims.
 
-6. CORS is open
-API CORS currently allows all origins, methods, headers. This is operationally permissive and should be reviewed for production hardening.
+6. CORS is restricted by configuration
+API CORS is now controlled through `ALLOWED_ORIGINS` and allows specific methods/headers. Production deployments must explicitly set trusted frontend domains in environment configuration.
 
 7. Training feature expectation vs serving vector semantics
 The two-tower user encoder consumes tag_weights as weighted inputs. After HMM migration, these weights are now normalized probabilities with a floor, not the prior signed EMA range. This is intentional but changes input distribution characteristics.

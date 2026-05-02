@@ -146,4 +146,4 @@ void reportEvent(String videoId, String type, {double? ratio}) async {
 - **405 Method Not Allowed**: Ensure you are using `POST` and the URL is exactly `/api/v1/events` or `/api/v1/videos/upload`.
 - **422 Unprocessable Entity**: Check that `video_id` is a valid UUID and `event_type` is one of the supported strings.
 - **413 Payload Too Large**: If the video is huge, ensure the server (Nginx/API) allows it. Current limit is generally 100MB+ depending on VPS config.
-- **CORS**: The API allows all origins (`*`), so Flutter Web/Mobile should connect without issues.
+- **CORS**: The API now allows only configured origins from `ALLOWED_ORIGINS`. If Flutter Web calls fail, add your frontend origin (for example, `https://app.example.com`) to `.env` and restart the API.
