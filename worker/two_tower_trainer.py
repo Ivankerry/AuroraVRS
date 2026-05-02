@@ -8,16 +8,21 @@ import numpy as np
 import math
 from datetime import datetime
 import json
+import signal
 
 import asyncpg
 import hashlib
+import redis.asyncio as redis
 from core.two_tower import TwoTowerModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global lock to prevent overlapping training cycles
-training_lock = asyncio.Lock()
+# SECURITY FIX #4: Use Redis-based distributed lock instead of local asyncio lock
+# This prevents multiple workers from training simultaneously even if deployed on different servers
+training_lock = asyncio.Lock()  # Local lock (for backward compatibility)
+REDIS_LOCK_KEY = "training:lock"
+REDIS_LOCK_TIMEOUT = 7200  # 2 hours max lock duration
 
 
 BATCH_SIZE = 256
@@ -34,6 +39,37 @@ async def get_db_pool():
     if url.startswith("postgresql+asyncpg://"):
         url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
     return await asyncpg.create_pool(url)
+
+async def acquire_redis_lock(redis_client):
+    """Acquire distributed training lock from Redis.
+    
+    Returns True if lock acquired, False if another worker is training.
+    This ensures only one training process runs even with multiple workers.
+    """
+    try:
+        acquired = await redis_client.set(
+            REDIS_LOCK_KEY,
+            "1",
+            ex=REDIS_LOCK_TIMEOUT,
+            nx=True  # Only set if key doesn't exist
+        )
+        if acquired:
+            logger.info("✅ Acquired distributed training lock from Redis")
+            return True
+        else:
+            logger.warning("⏭️ Another worker is already training; skipping this cycle")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Failed to acquire Redis lock: {e}")
+        return False
+
+async def release_redis_lock(redis_client):
+    """Release the distributed training lock."""
+    try:
+        await redis_client.delete(REDIS_LOCK_KEY)
+        logger.info("🔓 Released distributed training lock")
+    except Exception as e:
+        logger.error(f"Failed to release Redis lock: {e}")
 
 async def load_training_data(conn):
     query = """
@@ -327,14 +363,19 @@ async def generate_and_save_video_embeddings(conn, model):
         await conn.executemany(upsert_query, embeddings)
 
 async def run_training_cycle(pool):
-    if training_lock.locked():
-        logger.info("Training cycle already in progress, skipping...")
+    # SECURITY FIX #4: Use Redis distributed lock to prevent multiple workers from training simultaneously
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    redis_client = redis.from_url(redis_url)
+    
+    # Try to acquire distributed lock
+    if not await acquire_redis_lock(redis_client):
+        logger.info("Could not acquire training lock; another worker is already training.")
+        await redis_client.close()
         return
-
-    async with training_lock:
-        logger.info("Starting training cycle.")
-        try:
-            async with pool.acquire() as conn:
+    
+    try:
+        logger.info("Starting training cycle with distributed lock.")
+        async with pool.acquire() as conn:
                 vocab = await load_vocab(conn)
 
                 # --- NLP Hybrid Addition ---
@@ -411,6 +452,10 @@ async def run_training_cycle(pool):
                     logger.info("New model did not improve >0.1% over existing model. Kept old model.")
         except Exception as e:
             logger.error(f"Error during training cycle: {e}")
+        finally:
+            # Release the distributed lock when done (or on error)
+            await release_redis_lock(redis_client)
+            await redis_client.close()
 
 async def event_monitor_loop(pool):
     import redis.asyncio as redis
@@ -426,7 +471,8 @@ async def event_monitor_loop(pool):
                     key = f"aurora:milestone:{m}"
                     already_triggered = await redis_client.get(key)
                     if not already_triggered:
-                        await redis_client.set(key, "1")
+                        # Set milestone flag with 24-hour TTL (allows re-triggering after expiry)
+                        await redis_client.set(key, "1", ex=86400)
                         logger.info(f"Event milestone {m} crossed, triggering immediate training")
                         asyncio.create_task(run_training_cycle(pool))
                         break

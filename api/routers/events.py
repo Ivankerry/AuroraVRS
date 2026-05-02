@@ -2,19 +2,28 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from core.db import get_db
 from core.auth import get_optional_user_id
-from core.ranking import update_interest_vector, update_trending_score, clear_user_feed_cache
+from core.ranking import update_interest_vector, update_trending_score, clear_user_feed_cache, record_creator_signal
 import json
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# SECURITY FIX #3: Validate watch_ratio to prevent bad training data
 class EventCreate(BaseModel):
     video_id: str
     event_type: str
-    watch_ratio: Optional[float] = None
+    watch_ratio: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Watch ratio must be between 0.0 (0%) and 1.0 (100%)"
+    )
     metadata: Optional[dict] = None
+    creator_id: Optional[str] = None
 
 @router.post("/api/v1/events")
 async def record_event(req: EventCreate, bg_tasks: BackgroundTasks, user_id: Optional[str] = Depends(get_optional_user_id), db: AsyncSession = Depends(get_db)):
@@ -58,6 +67,9 @@ async def record_event(req: EventCreate, bg_tasks: BackgroundTasks, user_id: Opt
         tag_ids = [str(r["tag_id"]) for r in tags_res.mappings().fetchall()]
         
         bg_tasks.add_task(update_interest_vector, user_id, tag_ids, req.event_type, req.watch_ratio, event_count)
+
+        if req.creator_id and req.event_type in ["LIKE", "SHARE", "SAVE", "COMMENT", "DISLIKE", "SKIP"]:
+            bg_tasks.add_task(record_creator_signal, user_id, req.creator_id, req.event_type)
         
         # Instantly invalidate stale feeds when building new interests
         if req.event_type in ["LIKE", "SHARE", "SAVE"]:
@@ -78,4 +90,5 @@ async def record_event(req: EventCreate, bg_tasks: BackgroundTasks, user_id: Opt
         velocity = 0.5
     bg_tasks.add_task(update_trending_score, req.video_id, velocity)
     
+    logger.info(f"Event recorded: type={req.event_type}, user={user_id}, video={req.video_id}, watch_ratio={req.watch_ratio}")
     return {"status": "success"}

@@ -11,6 +11,53 @@ PROBABILITY_FLOOR = 0.02
 FLOAT_TOL = 1e-9
 
 
+async def _upsert_creator_affinity(user_id: str, creator_id: str, delta: float) -> None:
+    try:
+        from core.db import get_redis, AsyncSessionLocal
+        redis = await get_redis()
+        affinity_key = f"creator_affinity:{user_id}"
+
+        current_raw = await redis.get(affinity_key)
+        current_map = json.loads(current_raw) if current_raw else {}
+        current_value = float(current_map.get(str(creator_id), 0.0))
+        current_map[str(creator_id)] = current_value + float(delta)
+        await redis.setex(affinity_key, 86400, json.dumps(current_map))
+
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("""
+                INSERT INTO user_creator_affinity (user_id, creator_id, affinity_score, updated_at)
+                VALUES (:user_id, :creator_id, :affinity_score, NOW())
+                ON CONFLICT (user_id, creator_id)
+                DO UPDATE SET affinity_score = user_creator_affinity.affinity_score + EXCLUDED.affinity_score,
+                              updated_at = NOW()
+            """), {
+                "user_id": user_id,
+                "creator_id": creator_id,
+                "affinity_score": float(delta),
+            })
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Could not update creator affinity for {user_id}/{creator_id}: {e}")
+
+
+async def record_creator_signal(user_id: str, creator_id: str, signal_type: str) -> None:
+    normalized = str(signal_type or "").upper()
+    deltas = {
+        "FOLLOW": 3.0,
+        "LIKE": 1.0,
+        "SAVE": 1.5,
+        "SHARE": 1.25,
+        "COMMENT": 0.5,
+        "DISLIKE": -2.0,
+        "SKIP": -0.5,
+        "UNFOLLOW": -3.0,
+    }
+    delta = deltas.get(normalized)
+    if delta is None:
+        return
+    await _upsert_creator_affinity(user_id, creator_id, delta)
+
+
 def _stable_softmax(values: list[float]) -> list[float]:
     if not values:
         return []
@@ -358,9 +405,9 @@ async def update_trending_score(video_id, engagement_velocity, region="global"):
         elif z > 2:  tier = "WATCH"
 
         if tier:
-            # Store tier for rapid multiplier lookup
+            # Store tier for rapid multiplier lookup (24-hour TTL: viral window)
             tier_key = f"viral_tier:{vid_str}"
-            await redis.setex(tier_key, 300, tier)
+            await redis.setex(tier_key, 86400, tier)
             
             # Proactive Invalidation for VIRAL and MEGA_VIRAL
             if tier in ["VIRAL", "MEGA_VIRAL"]:
@@ -424,6 +471,8 @@ async def record_rollout_serves(db, redis, video_ids: list[str]):
     try:
         for vid in video_ids:
             count = await redis.incr(f"rollout_count:{vid}")
+            # Set TTL on count key: 24 hours (expires if video completes/fails rollout)
+            await redis.expire(f"rollout_count:{vid}", 86400)
             # Evaluate advancement every 100 serves
             if count % 100 == 0:
                 await evaluate_rollout_advancement(db, redis, vid)
@@ -445,7 +494,10 @@ async def evaluate_rollout_advancement(db, redis, video_id: str):
 
         # 2. Get current stage
         current_stage = await get_rollout_stage(video_id, redis)
-        if current_stage >= 4: return
+        if current_stage >= 4:
+            # Clean up: stage 4 is completion, remove tracking keys
+            await redis.delete(f"rollout_stage:{video_id}", f"rollout_count:{video_id}")
+            return
 
         # 3. Define thresholds
         thresholds = {
@@ -462,7 +514,7 @@ async def evaluate_rollout_advancement(db, redis, video_id: str):
         # If video is in Stage 1 and has very few views, it must perform well 
         # with followers before Phase 2 (Interest Cluster) testing.
         if watch_ratio > t["watch"] and like_rate >= t["like"]:
-            await redis.set(f"rollout_stage:{video_id}", current_stage + 1)
+            await redis.set(f"rollout_stage:{video_id}", current_stage + 1, ex=86400)
             logger.info(f"✅ Video {video_id} passed Gate {current_stage}. ADVANCED to Stage {current_stage + 1}")
             return
 
@@ -471,6 +523,8 @@ async def evaluate_rollout_advancement(db, redis, video_id: str):
         if count >= t["max_aud"]:
             await redis.sadd("rollout_failed", video_id)
             await redis.expire("rollout_failed", 86400)
+            # Clean up rollout tracking keys since video has completed
+            await redis.delete(f"rollout_stage:{video_id}", f"rollout_count:{video_id}")
             logger.warning(f"❌ Video {video_id} FAILED rollout at Stage {current_stage}. Removed from Discovery.")
             
     except Exception as e:
@@ -488,7 +542,6 @@ async def get_trending_video_ids(region="global", limit=50) -> list[str]:
         return []
 
 async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=100) -> list[dict]:
-    # ... (existing get_candidates implementation remains same, just ensuring context) ...
     try:
         candidates = {}
         
@@ -514,6 +567,33 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
             """
             result2 = await db.execute(text(query2), {"user_id": user_id})
             for r in result2.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
+
+            query2b = """
+            SELECT creator_id, affinity_score
+            FROM user_creator_affinity
+            WHERE user_id = :user_id
+            ORDER BY affinity_score DESC, updated_at DESC
+            LIMIT 20
+            """
+            affinity_res = await db.execute(text(query2b), {"user_id": user_id})
+            affinity_rows = affinity_res.mappings().fetchall()
+            if affinity_rows:
+                top_creator_ids = [str(r["creator_id"]) for r in affinity_rows if r.get("creator_id")]
+                if top_creator_ids:
+                    query2c = """
+                    SELECT v.*, array_agg(vt.tag_id) as tag_ids, array_agg(t.name) as tags, array_agg(vc.category_id) as category_ids, array_agg(c.name) as categories 
+                    FROM videos v 
+                    LEFT JOIN video_tags vt ON v.id = vt.video_id
+                    LEFT JOIN tags t ON t.id = vt.tag_id
+                    LEFT JOIN video_categories vc ON v.id = vc.video_id
+                    LEFT JOIN categories c ON c.id = vc.category_id
+                    WHERE v.creator_id = ANY(:creator_ids) AND v.status = 'READY' AND v.privacy = 'PUBLIC'
+                    GROUP BY v.id
+                    ORDER BY v.created_at DESC
+                    LIMIT 100
+                    """
+                    result2b = await db.execute(text(query2c), {"creator_ids": top_creator_ids})
+                    for r in result2b.mappings().fetchall(): candidates[str(r['id'])] = dict(r)
             
         # 3. Tag similarity
         if interest_vector:
@@ -592,15 +672,7 @@ async def get_candidates(user_id, db, seen_ids, region, interest_vector, limit=1
                 
             # Phase 1 Gate (Stage 1): Only show to followers or high-intent clusters
             if stage == 1:
-                # If we know the user is a follower (already in candidates via query2)
-                # or if we are in discovery, we add it but it will be ranked lower
-                # unless interest (similarity) is extremely high.
-                # However, to be strict with Phase 1:
-                is_follower = any(vid_str == str(f.get('id')) for f in candidates.values() if f.get('creator_id'))
-                if not is_follower:
-                    # Allow 10% chance for random interest testing if not a follower
-                    import random
-                    if random.random() > 0.1: continue
+                continue
 
             count = int(await redis.get(f"rollout_count:{vid_str}") or 0)
             thresholds = {1: 500, 2: 5000, 3: 50000}

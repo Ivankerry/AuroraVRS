@@ -35,8 +35,9 @@ Date captured: 2026-04-22 (updated after HMM interest-vector migration)
 AuroraVRS uses a hybrid recommendation stack:
 1. Retrieval model: Two-Tower neural model (PyTorch)
 2. ANN retrieval index: FAISS IndexFlatIP (inner product)
-3. Rule-based + statistical ranking layer: SQL candidate blending + normalized engagement + interest similarity + viral multiplier
+3. Rule-based + statistical ranking layer: SQL candidate blending + normalized engagement + interest similarity + viral multiplier + creator affinity boost
 4. Fallback mode: non-ML SQL candidate generation and cold-start random feed
+5. Creator affinity layer: follow/like/save/comment events update per-creator preference scores
 
 ### 2.2 Core concept
 The model predicts user-video affinity by embedding users and videos into a shared 128-dimensional normalized vector space.
@@ -251,6 +252,11 @@ If ML retrieval not used or fails, candidates come from blended SQL sources:
 4. Regional pool by user location
 5. Discovery pool with rollout-stage constraints
 
+Creator affinity is now also used as a candidate source:
+- The API stores user_creator_affinity rows for follow, like, save, share, comment, dislike, skip, and unfollow events.
+- The feed candidate generator pulls recent public videos from the user's highest-affinity creators even when the ML path is active.
+- Followed creators are guaranteed to survive candidate generation through the explicit followed-creator branch and creator-affinity branch.
+
 Candidates are deduplicated by video ID and filtered against seen IDs.
 
 ---
@@ -289,6 +295,11 @@ base_score = 0.5 * similarity + 0.5 * eng_score
 
 Low-retention penalty:
 - If watch_ratio < 0.1 then base_score -= 1.0
+
+Creator preference boost:
+- Videos from creators with positive user_creator_affinity get an additive bonus before the viral multiplier is applied.
+- Follow events carry the strongest positive creator-affinity weight.
+- The old heuristic discovery-stage follower check has been removed in favor of explicit follow and affinity-driven candidate sources.
 
 ### 8.5 Viral multiplier
 final_score = base_score * viral_multiplier
@@ -348,6 +359,20 @@ Stored in:
 - Redis iv:user_id (TTL 24h)
 - Postgres user_interest_vectors.tag_weights
 
+### 9.2.1 Creator affinity online update
+Creator-following preference is tracked separately from tag affinity.
+- Stored in Redis creator_affinity:user_id and Postgres user_creator_affinity.
+- FOLLOW: +3.0
+- LIKE: +1.0
+- SAVE: +1.5
+- SHARE: +1.25
+- COMMENT: +0.5
+- DISLIKE: -2.0
+- SKIP: -0.5
+- UNFOLLOW: -3.0
+
+This allows the system to recommend posts from specific creators even when their content tags differ from the user's topic history.
+
 ### 9.3 Trending and viral detection
 Each event maps to engagement velocity value and updates Redis sorted set trending:region.
 Then z-score tiering is computed from current leaderboard scores:
@@ -403,6 +428,7 @@ TTL policy by viral tier in returned page:
 ### 11.3 Cache invalidation
 Triggered by:
 - Certain user events (LIKE/SHARE/SAVE) via clear_user_feed_cache
+- Follow and unfollow actions via clear_user_feed_cache
 - Viral promotion logic for high z-score videos
 
 ---
@@ -496,8 +522,8 @@ Account age normalization differs between trainer dataset and API encode_user pa
 3. Negative feedback underuse in supervised target
 DISLIKE and SKIP are ingested but not directly used as labeled negatives in final training dataset (training keeps positives only + sampled negatives).
 
-4. Discovery stage-1 follower check is heuristic
-Current is_follower check in discovery logic does not query follow graph directly for that decision; behavior is partly indirect.
+4. Discovery and follow behavior are explicit
+Followed creators and creator-affinity creators are now injected directly into candidate generation, so the feed does not rely on the old heuristic follower check.
 
 5. Vector dimensional duality
 Storage vectors are 256-d while model and FAISS logic use 128 effective dims.
@@ -522,10 +548,11 @@ The two-tower user encoder consumes tag_weights as weighted inputs. After HMM mi
    - Loads candidate rows from SQL.
 6. If gate fails:
    - Uses SQL blended candidate generation.
-7. Computes final score with similarity + normalized engagement + penalties + viral multiplier.
-8. Sorts, truncates to limit, enriches viral tier, strips internal fields.
-9. Updates seen session and feed cache with tier-aware TTL.
-10. Returns videos + has_more + next_cursor.
+7. Merges creator-affinity candidates so followed or heavily liked creators still contribute directly.
+8. Computes final score with similarity + normalized engagement + creator boost + penalties + viral multiplier.
+9. Sorts, truncates to limit, enriches viral tier, strips internal fields.
+10. Updates seen session and feed cache with tier-aware TTL.
+11. Returns videos + has_more + next_cursor.
 
 ---
 

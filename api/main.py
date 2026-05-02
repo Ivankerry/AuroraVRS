@@ -106,6 +106,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from core.config import get_settings
 
 app = FastAPI(lifespan=lifespan)
 
@@ -123,12 +124,21 @@ os.makedirs(VIDEO_STORAGE_PATH, exist_ok=True)
 
 app.mount("/api/v1/videos/content", StaticFiles(directory=VIDEO_STORAGE_PATH), name="video-content")
 
+# SECURITY FIX #1: Restrict CORS to specific origins instead of allowing all
+settings = get_settings()
+allowed_origins_str = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:8080"
+)
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,  # FIXED: Only specific origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],  # FIXED: Specific methods
+    allow_headers=["Content-Type", "Authorization"],  # FIXED: Specific headers
 )
 
 @app.get("/health")

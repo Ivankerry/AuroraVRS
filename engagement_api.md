@@ -72,10 +72,25 @@ To ensure data consistency and AI accuracy, your app must trigger **two calls** 
 1.  **State Call**: e.g., `POST /videos/123/like` (Increments the UI counter).
 2.  **Signal Call**: e.g., `POST /events` with type `LIKE` (Updates personalization vector).
 
+Current backend behavior also bridges common action endpoints into creator-affinity tracking, so likes, saves, comments, follows, and unfollows are reflected in recommendation state even if the frontend misses the signal call.
+Follow and unfollow also invalidate the user's feed cache immediately, so the next feed request reflects the new social graph.
+
 ---
 
 ## ⏭️ Detailed Skip Event (The "How-To")
 The `SKIP` event is the only negative behavioral signal that doesn't require a manual "Dislike" from the user. It is inferred by the frontend based on navigation.
+
+## 👤 Follow and Creator Affinity
+Following a creator is now treated as a direct recommendation signal.
+
+### What it does
+* Follows and unfollows update a per-user creator-affinity store.
+* Followed creators are re-injected into feed candidates even when ML retrieval is active.
+* Follow and unfollow clear the user feed cache immediately so the next feed request reflects the change.
+
+### Recommended frontend behavior
+* Call the follow endpoint when the user taps follow.
+* You do not need a separate follow event call; the backend now bridges it.
 
 ### When to Fire
 *   **Trigger**: As soon as the user swiping *away* from a video (Next/Back).

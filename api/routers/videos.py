@@ -10,6 +10,8 @@ import json
 from pydantic import BaseModel
 from core.db import get_db
 from core.auth import get_current_user_id, get_optional_user_id
+from core.ranking import clear_user_feed_cache, record_creator_signal
+from fastapi import BackgroundTasks
 
 router = APIRouter(prefix="/api/v1/videos", tags=["videos"])
 logger = logging.getLogger(__name__)
@@ -310,8 +312,10 @@ async def record_view(id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "success"}
 
 @router.post("/{id}/like")
-async def like_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def like_video(id: str, bg_tasks: BackgroundTasks, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     try:
+        creator_res = await db.execute(text("SELECT creator_id FROM videos WHERE id = :id"), {"id": id})
+        creator_row = creator_res.mappings().first()
         q1 = text("INSERT INTO likes (user_id, video_id) VALUES (:user_id, :video_id) ON CONFLICT DO NOTHING RETURNING user_id")
         res = await db.execute(q1, {"user_id": user_id, "video_id": id})
         if res.mappings().first():
@@ -323,6 +327,9 @@ async def like_video(id: str, user_id: str = Depends(get_current_user_id), db: A
             if res3.mappings().first():
                 q4 = text("UPDATE videos SET dislike_count = dislike_count - 1 WHERE id = :id")
                 await db.execute(q4, {"id": id})
+            if creator_row and creator_row.get("creator_id"):
+                bg_tasks.add_task(record_creator_signal, user_id, str(creator_row["creator_id"]), "LIKE")
+                bg_tasks.add_task(clear_user_feed_cache, user_id)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -360,23 +367,32 @@ async def get_comments(id: str, db: AsyncSession = Depends(get_db)):
     return [dict(r) for r in result.mappings().fetchall()]
 
 @router.post("/{id}/save")
-async def save_video(id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def save_video(id: str, bg_tasks: BackgroundTasks, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     try:
+        creator_res = await db.execute(text("SELECT creator_id FROM videos WHERE id = :id"), {"id": id})
+        creator_row = creator_res.mappings().first()
         q1 = text("INSERT INTO saves (user_id, video_id) VALUES (:user_id, :video_id) ON CONFLICT DO NOTHING RETURNING user_id")
         res = await db.execute(q1, {"user_id": user_id, "video_id": id})
         if res.mappings().first():
             q2 = text("UPDATE videos SET save_count = save_count + 1 WHERE id = :id")
             await db.execute(q2, {"id": id})
+            if creator_row and creator_row.get("creator_id"):
+                bg_tasks.add_task(record_creator_signal, user_id, str(creator_row["creator_id"]), "SAVE")
+                bg_tasks.add_task(clear_user_feed_cache, user_id)
         await db.commit()
     except Exception:
         await db.rollback()
     return {"status": "success"}
 
 @router.post("/{id}/comments")
-async def create_comment(id: str, req: CommentCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_comment(id: str, req: CommentCreate, bg_tasks: BackgroundTasks, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+    creator_res = await db.execute(text("SELECT creator_id FROM videos WHERE id = :id"), {"id": id})
+    creator_row = creator_res.mappings().first()
     query = text("INSERT INTO comments (user_id, video_id, content) VALUES (:user_id, :video_id, :content) RETURNING id")
     await db.execute(query, {"user_id": user_id, "video_id": id, "content": req.content})
     update_q = text("UPDATE videos SET comment_count = comment_count + 1 WHERE id = :id")
     await db.execute(update_q, {"id": id})
+    if creator_row and creator_row.get("creator_id"):
+        bg_tasks.add_task(record_creator_signal, user_id, str(creator_row["creator_id"]), "COMMENT")
     await db.commit()
     return {"status": "success"}

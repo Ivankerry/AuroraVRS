@@ -103,8 +103,8 @@ async def get_feed(
                     created_at = created_at.replace(tzinfo=None)
                 account_age_days = (datetime.datetime.utcnow() - created_at).days
                 
-            seen_raw = await redis.get(f"session:{user_id}")
-            seen_ids = set(json.loads(seen_raw).get("seen", [])) if seen_raw else set()
+            seen_zset = await redis.zrange(f"session:{user_id}", 0, -1)
+            seen_ids = set(vid.decode() if isinstance(vid, bytes) else vid for vid in seen_zset) if seen_zset else set()
             
             iv_result = await db.execute(text("SELECT event_count FROM user_interest_vectors WHERE user_id = :user_id"), {"user_id": user_id})
             iv_row = iv_result.mappings().first()
@@ -233,14 +233,17 @@ async def get_feed(
             await record_rollout_serves(db, redis, [str(v['id']) for v in final_feed])
 
         if user_id and final_feed:
-            # Keep a large enough deduplication array so the user doesn't hit an infinite loop mid-session
-            new_seen = list(seen_ids) + [str(v['id']) for v in final_feed]
-            if new_seen:
-                await redis.set(
-                    f"session:{user_id}",
-                    json.dumps({"seen": new_seen[-1000:]}),
-                    ex=600
-                )
+            # Keep session dedup set bounded: ZSET with 200-entry cap, 4-hour TTL per activity
+            import time
+            now = time.time()
+            pipe = redis.pipeline()
+            for vid_id in [str(v['id']) for v in final_feed]:
+                pipe.zadd(f"session:{user_id}", {vid_id: now})
+            # Trim to last 200 entries; zremrangebyrank(0, -201) keeps indices [-200:]
+            pipe.zremrangebyrank(f"session:{user_id}", 0, -201)
+            # Reset TTL on every activity: 4-hour session timeout
+            pipe.expire(f"session:{user_id}", 60 * 60 * 4)
+            await pipe.execute()
                 
         # cache write
         def default_serializer(obj):

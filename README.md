@@ -55,7 +55,8 @@ AuroraVRS is a recommendation backend built around a hybrid architecture:
 4. A ranking layer blends semantic similarity, engagement, penalties, and viral boosts.
 5. An HMM-style online interest updater maintains the user’s live tag distribution.
 6. A worker service retrains the model and regenerates embeddings over time.
-7. Postgres is the source of truth; Redis is the fast state and cache layer.
+7. A creator-affinity layer tracks follows and creator-level actions so creator-specific posts can be recommended directly.
+8. Postgres is the source of truth; Redis is the fast state and cache layer.
 
 This is not a single-model API. It is a coordinated request-time and training-time system.
 
@@ -101,6 +102,7 @@ Redis stores live and transient state:
 - rollout stage and serve counters
 - trending leaderboards
 - invalidation markers
+- creator affinity snapshots
 
 ### 2.4 Deployment topology
 The intended full deployment uses Docker Compose with:
@@ -137,6 +139,8 @@ The user router supports:
 - `DELETE /api/v1/users/{id}/follow`
 - `GET /api/v1/users/{id}/followers`
 - `GET /api/v1/users/{id}/following`
+
+Follow and unfollow now also update creator-affinity state and clear the user's feed cache immediately.
 
 ### 3.4 Videos
 The video router supports:
@@ -343,6 +347,8 @@ Candidate videos come from a blended set of sources:
 4. region-similar videos
 5. discovery videos subject to rollout controls
 
+The backend also merges in creator-affinity candidates so creators the user follows or repeatedly engages with can surface even when the ML retrieval path is active.
+
 ### 8.2 Deduplication
 Candidates are deduplicated by video ID.
 
@@ -453,6 +459,8 @@ The backend stores seen video IDs in Redis so it can avoid repetitive loops duri
 
 ### 12.3 Cache invalidation
 Caches are invalidated when user activity materially changes the interests, especially on strong engagement actions and viral promotion events.
+
+Follow and unfollow are treated as immediate feed-changing actions and also invalidate the user's cached pages.
 
 ---
 

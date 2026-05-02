@@ -149,6 +149,14 @@ CREATE TABLE user_interest_vectors (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE user_creator_affinity (
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    creator_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    affinity_score FLOAT DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, creator_id)
+);
+
 CREATE TABLE video_tag_vectors (
     video_id UUID PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
     vector vector(256),
